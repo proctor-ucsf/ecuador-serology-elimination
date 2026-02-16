@@ -1,0 +1,183 @@
+---
+title: "EcoMID serology"
+subtitle: "Summarize seroprevalence for elimination targets overall and by community type"
+author: "Ben Arnold ben.arnold@ucsf.edu"
+date: "updated: `r Sys.time()`"
+format:
+  html:
+    
+    toc: true
+    embed-resources: true
+    code-fold: true
+    link-external-newwindow: true
+---
+
+# Summary
+
+This is an internal replication of Lesly Simbaña's analysis to verify elimination using IgG serology. 
+
+# Preamble
+
+```{r preamble}
+library(here)
+here()
+#----------------------------
+# source the config file
+#----------------------------
+source(here("R","0-config.R"))
+
+# unload the raster package to avoid conflicts with dplyr::select
+detach("package:raster", unload = TRUE)
+
+```
+
+# Load the Luminex IgG data
+
+```{r load antibody data}
+#-------------------------------
+# load the formatted MBA data
+# for EcoMID, created by
+# 0-all_sero_results_dataclean.Rmd
+#
+# data are in long format
+#-------------------------------
+d <- read_rds(here("../../data/serology/final/ecomid_serology_datasets","ecomid_sero_antigen_seropos_long_2025-12-18.rds"))
+```
+
+```{r process antibody data}
+#-------------------------------
+# filter to antigens of interest
+# pivot wider to make composite
+# indicators
+#-------------------------------
+d1 <- d %>%
+  filter( antigen %in% c("ov16","rp17","tmpa","osp_in","osp_o","pgp3")) %>%
+  select(community_type,childid,timepoint,antigen, seropos) %>%
+  pivot_wider(id_cols=c(community_type,childid,timepoint),names_from = "antigen", values_from = "seropos") %>%
+  mutate(oncho=ov16,
+         trachoma = pgp3,
+         yaws = ifelse(rp17 == 1 & tmpa==1, 1, 0),
+         cholera = ifelse(osp_in == 1 & osp_o == 1, 1, 0)
+         ) 
+
+#-------------------------------
+# pivot pathogen-specific summaries
+# back to long format
+#-------------------------------
+d2 <- d1 %>%
+  select(community_type,childid,timepoint,oncho,trachoma,yaws,cholera) %>%
+  pivot_longer(cols=c(oncho,trachoma,yaws,cholera), names_to = "pathogen", values_to = "seropos")
+```
+
+# Estimate seroprevalence
+
+```{r estimate seroprevalence overall and by community type}
+
+# identify number of samples
+# with missing values
+table(d2$pathogen,is.na(d2$seropos))
+
+#-------------------------------
+# estimate seroprevalence overall
+#-------------------------------
+dprev <- d2 %>%
+  group_by(pathogen) %>%
+  summarize(
+    nobs = sum(!is.na(seropos)),
+    npos = sum(seropos, na.rm=TRUE)
+  ) %>%
+  rowwise() %>%
+  mutate(
+    seroprev = (npos/nobs)*100,
+    seroprev_min95 = binom.test(x=npos,n=nobs)$conf.int[1]*100,
+    seroprev_max95 = binom.test(x=npos,n=nobs)$conf.int[2]*100
+  )
+
+kbl(dprev, digits=1)
+
+#-------------------------------
+# estimate seroprevalence by
+# community type for trachoma pgp3
+#-------------------------------
+dprev_pgp3_community <- d2 %>%
+  filter(pathogen == "trachoma") %>%
+  group_by(community_type, pathogen) %>%
+  summarize(
+    nobs = sum(!is.na(seropos)),
+    npos = sum(seropos, na.rm=TRUE)
+  ) %>%
+  rowwise() %>%
+  mutate(
+    seroprev = (npos/nobs)*100,
+    seroprev_min95 = binom.test(x=npos,n=nobs)$conf.int[1]*100,
+    seroprev_max95 = binom.test(x=npos,n=nobs)$conf.int[2]*100
+  )
+  
+kbl(dprev_pgp3_community, digits=1)
+```
+
+# Estimate Pgp3 diff by community type
+
+```{r}
+#| label: estimate pgp3 seropos diff by community type
+
+options(knitr.kable.NA = '')
+
+#----------------------------
+# filter to just trachoma
+#----------------------------
+d3 <- d2 %>%
+  filter(pathogen == "trachoma")
+  
+
+#----------------------------
+# Estimate differences by
+# community type using a 
+# linear binomial model
+# with robust SEs clustered
+# at the child level
+#----------------------------
+
+pgp3fit <- glm(seropos ~ community_type, family=binomial(link="identity"), data=d3)
+# adjust SEs for repeated measures within child
+pgp3fit_rb <- coeftest(pgp3fit, .vcov = vcovCL(pgp3fit, cluster=d3$childid))
+pgp3fit_ci <- confint(pgp3fit_rb)
+
+pgp3fit_rb
+pgp3fit_ci
+
+#----------------------------
+# collate estimates and add
+# to seroprevalence table
+# multiply difference in 
+# proportion by 100 for %
+#----------------------------
+d_pgp3diffs <- data.frame(
+  community_type = c("Esmeraldas","Borbon","Rural Road","Rural River"),
+  diff    = c(NA,pgp3fit_rb[2:4,1])*100,
+  diff_se = c(NA,pgp3fit_rb[2:4,2])*100,
+  diff_p  = c(NA,pgp3fit_rb[2:4,4]),
+  diff_min95 = c(NA,pgp3fit_ci[2:4,1])*100,
+  diff_max95 = c(NA,pgp3fit_ci[2:4,2])*100
+)
+
+dprev_pgp3_community2 <- dprev_pgp3_community %>%
+  left_join(d_pgp3diffs, join_by(community_type)) %>%
+  # format the differences and prevalence estimates for printing
+  mutate(
+    seroprev_print = paste0(sprintf("%1.1f",seroprev)," (",sprintf("%1.1f",seroprev_min95)," to ",sprintf("%1.1f",seroprev_max95),")"),
+    diff_print = paste0(sprintf("%1.1f",diff)," (",sprintf("%1.1f",diff_min95)," to ",sprintf("%1.1f",diff_max95),")"),
+    diff_print = ifelse(is.na(diff),NA,diff_print)
+  )
+
+kbl(dprev_pgp3_community2 %>% select(community_type,nobs,npos,seroprev_print,diff_print,diff_p), digits=3, col.names = c("Community type","N measurements","N pos","Seroprevalence (95% CI)","Difference (95% CI)","P-value"))
+
+```
+
+
+# Session Info
+```{r session info}
+sessionInfo()
+```
+
+

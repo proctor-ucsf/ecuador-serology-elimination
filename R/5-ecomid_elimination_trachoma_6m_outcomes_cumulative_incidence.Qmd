@@ -1,0 +1,351 @@
+---
+title: "EcoMID serology"
+subtitle: "Pgp3 seroprevalence at 6m and cumulative incidence"
+author: "Ben Arnold ben.arnold@ucsf.edu"
+date: "updated: `r Sys.time()`"
+format:
+  html:
+    
+    toc: true
+    embed-resources: true
+    code-fold: true
+    link-external-newwindow: true
+---
+
+# Summary
+
+This script summarizes IgG antibody responses to _Chlaymdia trachomatis_ Pgp3 and Ct684 antigens among children in the ECoMiD birth cohort. 
+
+We then estimate the seroconversion rate (SCR) to Pgp3 for comparison with other global populations along the path toward elimination.  We estimate the SCR using two approaches: a catalytic model based on age-seroprevalence, and non-parametrically using longitudinal seroconversion among children at risk.
+
+# Preamble
+
+```{r preamble}
+library(here)
+here()
+#----------------------------
+# source the config file
+#----------------------------
+source(here("R","0-config.R"))
+
+# unload the raster package to avoid conflicts with dplyr::select
+detach("package:raster", unload = TRUE)
+
+```
+
+# Load datasets
+
+## Luminex data
+
+```{r load antibody data}
+#-------------------------------
+# load the formatted MBA data
+# for EcoMID, created by
+# 0-all_sero_results_dataclean.Rmd
+#
+# data are in long format
+#-------------------------------
+d <- read_rds(here("../../data/serology/final/ecomid_serology_datasets","ecomid_sero_antigen_seropos_long_2025-12-18.rds"))
+
+# drop monitoring targets
+d1 <- d %>%
+  filter( !antigen %in% c("gst","monitor","vero"))
+```
+
+## Survey and household data
+
+```{r load child visit data}
+#-------------------------------
+# load child visit data for
+# exact dates at age of DBS collection
+#-------------------------------
+dvisit <- read_rds(file=here("../../data/ecomid-field/final","ecomid_child_visit_info_2025-09-10.rds"))
+
+#-------------------------------
+# load household characteristics
+# to use type of delivery
+#-------------------------------
+dhh <- read_csv(file = here("../../data/ecomid-field/final","surveydata_20251003.csv")) %>%
+  mutate(childid = paste0(community,"B",str_pad(house_ID,4,pad="0"))) %>%
+  select(childid,vagbirth)
+
+#-------------------------------
+# join visit ages to serology
+# data and create a final age
+# variable
+# also join delivery type
+#-------------------------------
+d2 <- d1 %>%
+  left_join(dhh, join_by("childid")) %>%
+  left_join(dvisit, join_by("community","community_name","childid","timepoint"), relationship = "many-to-one") %>%
+  mutate(age_days = case_when(
+    !is.na(agedays_dbs) ~ agedays_dbs,
+    is.na(agedays_dbs) & !is.na(agedays_stool) ~ agedays_stool,
+    is.na(agedays_dbs) & is.na(agedays_stool) ~ agedays_svy,
+    TRUE ~ NA
+  ),
+    # there are 2 children with visits that don't appear in the childvisit data
+    # for them, it is both at 12 months, so assume age is DOB + 365 days
+    agedays = ifelse(is.na(age_days), difftime(time1=dob, time2=dob + 365, units="days"), age_days), 
+  age_months = age_days/30.4,
+  age_years = age_days/365.25
+           
+           )
+```
+
+
+
+# Seroprevalence by age
+
+```{r load Pgp3 antibody data}
+
+# filter to Pgp3 responses
+d3 <- d2 %>%
+  filter(antigen=="pgp3") 
+
+```
+
+
+Seroprevalence by age
+
+```{r seroprev by age}
+#-------------------------------
+# estimate seroprevalence 
+# by age and community type
+#-------------------------------
+dprev_age <- d3 %>%
+  mutate(community_type2 = case_when(
+    community_type %in% c("Rural Road","Rural River") ~ "Rural",
+    TRUE ~ as.character(community_type)
+    ),
+    community_type2 = factor(community_type2,levels=c("Esmeraldas","Borbon","Rural"))
+    )%>%
+  group_by(community_type2,timepoint) %>%
+  summarize(
+    nobs = sum(!is.na(seropos)),
+    npos = sum(seropos, na.rm=TRUE)
+  ) %>%
+  rowwise() %>%
+  mutate(
+    seroprev = (npos/nobs)*100,
+    seroprev_min95 = binom.test(x=npos,n=nobs)$conf.int[1]*100,
+    seroprev_max95 = binom.test(x=npos,n=nobs)$conf.int[2]*100
+  )
+
+kbl(dprev_age, digits=1)
+
+pcols <- RColorBrewer::brewer.pal(8,"Dark2")[3:1]
+plot_pgp3_by_age <- ggplot(data = dprev_age, 
+                           aes(x = timepoint, 
+                               y=seroprev,
+                               color=community_type2,
+                               fill=community_type2)
+                           ) +
+  facet_grid(.~community_type2) +
+  geom_point() +
+  geom_ribbon(aes(ymin=seroprev_min95,ymax=seroprev_max95),alpha=0.2,color=NA) +
+  geom_line() +
+  scale_x_continuous(breaks = c(0,6,9,12,18,24)) +
+  scale_y_continuous(breaks = seq(0,20,by=5)) +
+  scale_color_manual(values = pcols) +
+  scale_fill_manual(values = pcols) +
+  coord_cartesian(xlim=c(6,24)) +
+  labs(x = "Age (months)", y = "Seroprevalence (%)", title = "Pgp3 seroprevalence by age, ECoMiD") +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    panel.grid.minor.x = element_blank()
+  )
+
+plot_pgp3_by_age
+```
+
+```{r stratified incidence estimates}
+#-------------------------------
+# simplified community type
+#-------------------------------
+d4 <- d3 %>%
+  mutate(community_code = substr(sampleid,1,1),
+         community_type = case_when(
+           community_code == "E" ~ "Esmeraldas",
+           community_code == "B" ~ "Borbon",
+           TRUE ~ "Rural villages"),
+         community_type = factor(community_type, levels=c("Esmeraldas","Borbon","Rural villages"))
+  )
+
+#---------------------------------
+# Identify children at risk at
+# age 6 months
+# and indicators of ever seropositive
+#---------------------------------
+dcum <- d4 %>%
+  group_by(childid) %>%
+  mutate(pos6m = ifelse(timepoint == 6 & seropos == 1, 1, 0),
+         pos6m = max(pos6m, na.rm = TRUE),
+         everpos = max(seropos, na.rm = TRUE),
+         nobs = n(),
+         lastobs = max(timepoint)
+) %>%
+  select(community_type, vagbirth, childid, pos6m, everpos, nobs, lastobs) %>%
+  slice(1)
+
+
+```
+
+# Ever Pgp3 positive
+
+Estimate the proportion of children who were ever Pgp3 positive, by community type. 
+```{r}
+#| label: ever positive to Pgp3
+#| 
+#---------------------------------
+# Estimate the proportion of children
+# who were ever positive to Pgp3
+#
+# overall and by community type
+#---------------------------------
+est_everpos_overall <- dcum %>%
+  ungroup() %>%
+  summarize(nchild = sum(!is.na(everpos)),
+            npos = sum(everpos, na.rm=TRUE)) %>%
+  rowwise() %>%
+  mutate(pgp3pos = npos/nchild*100,
+         pgp3pos_min95 = binom.test(x=npos,n=nchild)$conf.int[1]*100,
+         pgp3pos_max95 = binom.test(x=npos,n=nchild)$conf.int[2]*100
+        ) %>%
+  mutate(table_label = "Overall")
+
+est_everpos_comm <- dcum %>%
+  group_by(community_type) %>%
+  summarize(nchild = sum(!is.na(everpos)),
+            npos = sum(everpos, na.rm=TRUE)) %>%
+  rowwise() %>%
+  mutate(pgp3pos = npos/nchild*100,
+         pgp3pos_min95 = binom.test(x=npos,n=nchild)$conf.int[1]*100,
+         pgp3pos_max95 = binom.test(x=npos,n=nchild)$conf.int[2]*100
+        ) %>%
+  rename(table_label = community_type)
+
+est_everpos <- bind_rows(est_everpos_overall, est_everpos_comm) %>%
+  select(table_label, everything())
+
+kbl(est_everpos, digits = 1, caption = "Proportion of children who were ever seropositive to Pgp3 between ages 6 and 24 months overall and by community type") %>%
+  kableExtra::group_rows(group_label = "Overall",start_row=1,end_row=1) %>%
+  kableExtra::group_rows(group_label = "Community type",start_row=2,end_row=4) %>%
+  kableExtra::kable_styling(bootstrap_options = "striped")
+
+```
+
+
+# Seroprevalence at 6m
+
+Estimate Pgp3 seroprevalence at 6m, stratified by community type
+
+```{r}
+#| label: estimate  Pgp3 seroprevalence at 6m
+
+#---------------------------------
+# estimate % positive at 6 months
+# overall
+# by community type
+# by birth delivery type
+#---------------------------------
+est_pos6m_overall <- dcum %>%
+  ungroup() %>%
+  summarize(nchild = sum(!is.na(pos6m)),
+            npos = sum(pos6m, na.rm=TRUE)) %>%
+  rowwise() %>%
+  mutate(prev6m = npos/nchild*100,
+         prev6m_min95 = binom.test(x=npos,n=nchild)$conf.int[1]*100,
+         prev6m_max95 = binom.test(x=npos,n=nchild)$conf.int[2]*100
+        ) %>%
+  mutate(table_label = "Overall")
+
+est_pos6m_comm <- dcum %>%
+  group_by(community_type) %>%
+  summarize(nchild = sum(!is.na(pos6m)),
+            npos = sum(pos6m, na.rm=TRUE)) %>%
+  rowwise() %>%
+  mutate(prev6m = npos/nchild*100,
+         prev6m_min95 = binom.test(x=npos,n=nchild)$conf.int[1]*100,
+         prev6m_max95 = binom.test(x=npos,n=nchild)$conf.int[2]*100
+        ) %>%
+  rename(table_label = community_type)
+
+est_pos6m_birth <- dcum %>%
+  group_by(vagbirth) %>%
+  summarize(nchild = sum(!is.na(pos6m)),
+            npos = sum(pos6m, na.rm=TRUE)) %>%
+  rowwise() %>%
+  mutate(prev6m = npos/nchild*100,
+         prev6m_min95 = binom.test(x=npos,n=nchild)$conf.int[1]*100,
+         prev6m_max95 = binom.test(x=npos,n=nchild)$conf.int[2]*100
+        ) %>%
+  mutate(table_label = ifelse(vagbirth == 1, "Vaginal birth","Cesarean section"))
+
+est_pos6m <- bind_rows(est_pos6m_overall, est_pos6m_birth,est_pos6m_comm) %>%
+  select(-vagbirth) %>%
+  select(table_label, everything())
+
+kbl(est_pos6m, digits = 1, caption = "Pgp3 seroprevalence at age 6 months overall, by type of birth delivery, and by community type") %>%
+  kableExtra::group_rows(group_label = "Overall",start_row=1,end_row=1) %>%
+    kableExtra::group_rows(group_label = "Birth type",start_row=2,end_row=3) %>%
+  kableExtra::group_rows(group_label = "Community type",start_row=4,end_row=6) %>%
+  kableExtra::kable_styling(bootstrap_options = "striped")
+```
+
+# Cumulative incidence 6-24m
+```{r}
+#| label: cumulative incidence estimates
+#| 
+#---------------------------------
+# Among those at risk, determine
+# if they had an incident seroconversion
+# by age 24 months
+#
+# overall and by community type
+# 
+# note, these estimates are approximate
+# because only about 80% of children
+# completed 24 months of follow-up
+#---------------------------------
+est_cuminc_overall <- dcum %>%
+  filter(pos6m == 0) %>%
+  ungroup() %>%
+  summarize(nchild = sum(!is.na(everpos)),
+            npos = sum(everpos, na.rm=TRUE)) %>%
+  rowwise() %>%
+  mutate(cuminc = npos/nchild*100,
+         cuminc_min95 = binom.test(x=npos,n=nchild)$conf.int[1]*100,
+         cuminc_max95 = binom.test(x=npos,n=nchild)$conf.int[2]*100
+        ) %>%
+  mutate(table_label = "Overall")
+
+est_cuminc_comm <- dcum %>%
+  filter(pos6m == 0) %>%
+  group_by(community_type) %>%
+  summarize(nchild = sum(!is.na(everpos)),
+            npos = sum(everpos, na.rm=TRUE)) %>%
+  rowwise() %>%
+  mutate(cuminc = npos/nchild*100,
+         cuminc_min95 = binom.test(x=npos,n=nchild)$conf.int[1]*100,
+         cuminc_max95 = binom.test(x=npos,n=nchild)$conf.int[2]*100
+        ) %>%
+  rename(table_label = community_type)
+
+est_cuminc <- bind_rows(est_cuminc_overall, est_cuminc_comm) %>%
+  select(table_label, everything())
+
+kbl(est_cuminc, digits = 1, caption = "Cumulative incidence of seroconversion to Pgp3 between ages 6 and 24 months overall and by community type") %>%
+  kableExtra::group_rows(group_label = "Overall",start_row=1,end_row=1) %>%
+  kableExtra::group_rows(group_label = "Community type",start_row=2,end_row=4) %>%
+  kableExtra::kable_styling(bootstrap_options = "striped")
+
+```
+
+# Session Info
+```{r session info}
+sessionInfo()
+```
+
+

@@ -1,0 +1,311 @@
+---
+title: "EcoMID serology"
+subtitle: "Create a map of population density"
+author: "Ben Arnold ben.arnold@ucsf.edu"
+date: "updated: `r Sys.time()`"
+format:
+  html:
+    
+    toc: true
+    embed-resources: true
+    code-fold: true
+    link-external-newwindow: true
+---
+
+# Summary
+
+Use leaflet for a basic basemap of community sampling. Create a map with the study villages indicated. Add in a zoomed out map of South america
+
+
+# Preamble
+
+```{r}
+#| label: preamble
+#| message: FALSE
+#| 
+library(here)
+here()
+#----------------------------
+# source the config file
+#----------------------------
+source(here("R","0-config.R"))
+
+# load individual package that often conflicts with dplyr
+library(terra) #needed; will conflict with dplyr so left this in this file rather than putting in config file 
+```
+
+
+# Load geodata
+
+```{r}
+#| label: load administrative boundaries
+
+d_adm0 <- st_read(here("data/geodata/ecu_adm_2024","ecu_adm_adm0_2024.shp"))
+
+d_adm1 <- st_read(here("data/geodata/ecu_adm_2024","ecu_adm_adm1_2024.shp"))
+
+d_adm <- st_read(here("data/geodata/ecu_adm_2024","ecu_adm_adm2_2024.shp"))
+# Filter to Esmeraldas province
+d_adm2 <- d_adm %>%
+  filter(ADM1_ES == "Esmeraldas")
+
+```
+
+```{r}
+#| label: load community points
+
+#----------------------------
+# load community lon/lat
+# note: latitutde and longitude
+# are backwards!  fix
+#----------------------------
+dgps <- read_csv(here("../../data/geospatial","ECoMiD_communities_GPS.csv")) %>%
+  rename(lon = Lat, lat = Lon)
+
+#----------------------------
+# create sf object
+#----------------------------
+dgps_sf <- dgps %>%
+  st_as_sf(coords = c("lon", "lat"), crs = 4326) %>% 
+  mutate(com = case_when(Name == "Esmeraldas" ~ "Esmeraldas", 
+                         Name == "Borbon" ~ "Borbon", 
+                         Name == "Colon Eloy" | Name == "Maldonado" | 
+                           Name == "Selva Alegre" | Name == "Timbire" ~ "Rural Road", 
+                         TRUE ~ "Rural River"))
+```
+
+```{r}
+#| label: load river polygon
+# all rivers
+d_riv <- st_read(here("data/geodata","hotosm_ecu_waterways_lines_shp"))
+d_riv_sf <- d_riv %>%
+  st_as_sf(coords = c("lon", "lat"), crs = 4326)
+
+# major rivers
+d_riv2 <- d_riv %>%
+   filter(name %in% c("Río Cayapas","Río Santiago","Río San Francisco")) %>%
+  st_intersection(d_adm2)
+d_riv2_sf <- d_riv %>%
+  st_as_sf(coords = c("lon", "lat"), crs = 4326)
+
+# major roads
+bbox <- c(
+  xmin = -80,
+  ymin = 0.6,
+  xmax = -78.7,
+  ymax = 1.5
+)
+
+roads <- opq(bbox = bbox, timeout =180) |>
+  add_osm_feature(
+    key = "highway",
+    value = c(
+      "motorway", "trunk", "primary",
+      "secondary", "tertiary"
+    )
+  ) |>
+  osmdata_sf()
+
+roads_sf <- roads$osm_lines
+
+```
+
+# MAP1: Esmeraldas
+```{r}
+#| label: load topography 
+#| 
+
+# Filter to Esmeraldas province
+d_adm3 <- d_adm1 %>% filter(ADM1_ES == "Esmeraldas")
+d_adm3_sf <- d_adm3 %>%
+  st_as_sf(coords = c("lon", "lat"), crs = 4326)
+           
+# color for community type
+pal <- colorFactor(
+  palette = c("#CC79A7", "navy", "#D55E00", "#009E73"),
+  domain = dgps_sf$com
+)
+
+
+# Leaflet map with polygon
+m <- leaflet(options = leafletOptions(zoomControl = FALSE, fadeAnimation = FALSE)) %>%
+  addProviderTiles(providers$Esri.WorldTerrain) %>% 
+  setView(lng = -79.1, lat = 0.8, zoom = 9.0)  %>%
+  # Rivers Line
+  addPolylines(
+    data = d_riv2_sf,
+    color = "#74ADD1",
+    weight = 2,
+    opacity = 0.7,
+    popup = "Manual line"
+  ) %>% 
+  # Line
+  addPolylines(
+    data = roads_sf,
+    color = "#C4A484",
+    weight = 3,
+    opacity = 1,
+    popup = "Manual line"
+  ) %>% 
+  addCircleMarkers(
+    data = dgps_sf,
+    radius = 5, 
+    weight = 1,
+    stroke = FALSE, 
+    fillOpacity = 1, 
+    fillColor = ~pal(com)
+  ) %>% 
+  addPolygons(
+    data = d_adm3_sf,
+    color = "navy",
+    weight = 3,
+    fillColor = "transparent",
+    fillOpacity = 1,
+    popup = ~ADM1_ES) %>%
+  addLegend(
+    position = "topleft",
+    colors = c("navy", "#CC79A7", "#009E73", "#D55E00", NA, "#74ADD1", "#C4A484"), 
+    labels = c("Esmeraldas city", "Borbón", "Rural, road accessible", "Rural, river accessible", "", "Major Rivers", "Major Roads"), 
+    opacity = 1
+    
+  ) %>% addScaleBar(
+    position = "bottomright",
+    options = scaleBarOptions(
+      maxWidth = 100,
+      metric = TRUE,
+      imperial = FALSE,
+      updateWhenIdle = TRUE
+    ))
+
+m
+# manually take a screenshot of the map and save as png (tried to use mapshot but it got too complex that it had a hard time exporting it)
+
+```
+
+
+# MAP3: South America
+```{r}
+#| label: create map of South America 
+
+# get names of countries
+sa <- ne_countries(
+  continent = "South America",
+  scale = "medium",
+  returnclass = "sf"
+)
+
+# subselect for countries that will be in smaller map view
+sa_sel <- sa %>%
+  filter(name_long %in% c(
+    "Brazil", "Ecuador", "Peru", "Bolivia", "Colombia", "Venezuela"
+  ))
+sa_ecuador <- sa %>%
+  mutate(
+    fill_ecuador = if_else(name_long == "Ecuador", "Ecuador", "Other")
+  )
+esmeraldas_pt <- d_adm1 %>%
+  filter(ADM1_ES == "Esmeraldas") %>%
+  st_point_on_surface()
+
+# add label positions
+label_positions <- tibble::tibble(
+  name = c("Brazil", "Ecuador", "Peru", "Bolivia", "Colombia", "Venezuela"),
+  lon  = c(-65, -78.5, -76, -64, -73, -65),
+  lat  = c(-5, -1.5, -9, -17, 4, 8)
+)
+
+# set map dimensions 
+xlim_reg <- c(-82, -55)
+ylim_reg <- c(-10, 15)
+
+map_overview <- ggplot() +
+  
+  # Countries (Ecuador highlighted)
+  geom_sf(
+    data = sa_ecuador,
+    aes(fill = fill_ecuador),
+    color = "black"
+  ) +
+  scale_fill_manual(
+    values = c(
+      "Ecuador" = "grey",
+      "Other"   = "white"
+    ),
+    guide = "none"
+  ) +
+  
+  # Esmeraldas province
+  geom_sf(
+    data = d_adm1 %>% filter(ADM1_ES == "Esmeraldas"),
+    color = "black",
+    fill = "navy"
+  ) +
+  
+  # Esmeraldas label with leader line
+  ggrepel::geom_label_repel(
+    data = esmeraldas_pt,
+    aes(label = "Esmeraldas", geometry = geometry),
+    stat = "sf_coordinates",
+    color = "white", 
+    nudge_x = -3,
+    nudge_y = 2,
+    size = 3,
+    fill = "navy",
+    segment.color = "black",
+    segment.size = 0.5,
+    min.segment.length = 0
+  ) +
+  
+  # Country labels
+  geom_text(
+    data = label_positions,
+    aes(x = lon, y = lat, label = name),
+    size = 3,
+    fontface = "bold",
+    color = "black"
+  ) +
+  
+  # Coordinate system
+  coord_sf(
+    crs = 4326,
+    xlim = c(-85, -55),
+    ylim = c(-20, 15)
+  ) +
+  
+  labs(x = "Latitude", y = "Longitude") +
+  annotation_scale(location = "bl", width_hint = 0.2) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    plot.tag = element_text(face = "bold", size = 16)
+  )
+
+map_overview
+
+```
+
+
+```{r}
+#|label: composite map
+
+# Need to read in the manual screenshot
+img_map <- readPNG("../output/leaflet_map_screenshot.png")
+
+test <- ggdraw() + draw_image("../output/leaflet_map_screenshot.png")
+test
+
+
+
+comp_map <- plot_grid(map_overview, test, labels = c("A", "B"))
+comp_map
+
+ggsave(filename = here("output","ecomid-map-basemap.png"), comp_map, device = "png", width = 230, height = 140, units = "mm")
+```
+
+
+# Session Info
+```{r session info}
+sessionInfo()
+```
+
+

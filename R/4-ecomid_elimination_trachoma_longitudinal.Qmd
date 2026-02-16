@@ -1,0 +1,989 @@
+---
+title: "Integrated serosurveillance to assess disease elimination in coastal Ecuador"
+subtitle: "Trachoma antigen longitudinal analysis"
+author: "Ben Arnold ben.arnold@ucsf.edu"
+date: "updated: `r Sys.time()`"
+format:
+  html:
+    
+    toc: true
+    embed-resources: true
+    code-fold: true
+    link-external-newwindow: true
+---
+
+# Summary
+
+This script summarizes IgG antibody responses to _Chlaymdia trachomatis_ Pgp3 and Ct684 antigens among children in the ECoMiD birth cohort. 
+
+We then estimate the seroconversion rate (SCR) to Pgp3 for comparison with other global populations along the path toward elimination.  We estimate the SCR using two approaches: a catalytic model based on age-seroprevalence, and non-parametrically using longitudinal seroconversion among children at risk.
+
+# Preamble
+
+```{r preamble}
+library(here)
+here()
+#----------------------------
+# source the config file
+#----------------------------
+source(here("R","0-config.R"))
+
+# unload the raster package to avoid conflicts with dplyr::select
+detach("package:raster", unload = TRUE)
+
+```
+
+# Load the clean MBA data
+
+```{r load antibody data}
+#-------------------------------
+# load the formatted MBA data
+# for EcoMID, created by
+# 0-all_sero_results_dataclean.Rmd
+#
+# data are in long format
+#-------------------------------
+d <- read_rds(here("../../data/serology/final/ecomid_serology_datasets","ecomid_sero_antigen_seropos_long_2025-12-18.rds"))
+
+# drop monitoring targets
+d1 <- d %>%
+  filter( !antigen %in% c("gst","monitor","vero"))
+```
+
+```{r load child visit data}
+#-------------------------------
+# load child visit data for
+# exact dates at age of DBS collection
+#-------------------------------
+dvisit <- read_rds(file=here("../../data/ecomid-field/final","ecomid_child_visit_info_2025-09-10.rds"))
+
+#-------------------------------
+# join visit ages to serology
+# data and create a final age
+# variable
+#-------------------------------
+d2 <- d1 %>%
+  left_join(dvisit, join_by("community","community_name","childid","timepoint"), relationship = "many-to-one") %>%
+  mutate(age_days = case_when(
+    !is.na(agedays_dbs) ~ agedays_dbs,
+    is.na(agedays_dbs) & !is.na(agedays_stool) ~ agedays_stool,
+    is.na(agedays_dbs) & is.na(agedays_stool) ~ agedays_svy,
+    TRUE ~ NA
+  ),
+    # there are 2 children with visits that don't appear in the childvisit data
+    # for them, it is both at 12 months, so assume age is DOB + 365 days
+    agedays = ifelse(is.na(age_days), difftime(time1=dob, time2=dob + 365, units="days"), age_days), 
+  age_months = age_days/30.4,
+  age_years = age_days/365.25
+           
+           )
+```
+
+# MFI by age
+
+Individual longitudinal trajectories via spaghetti plot, just to get a feel for the longitudinal patterns
+
+
+```{r mfi by age pgp3}
+
+# Longitudinal trajectories pgp3
+# identify children who were ever Pgp3 positive
+d2_pgp3pos <- d2 %>%
+  group_by(childid, antigen) %>%
+  mutate(everpos = max(seropos, na.rm=TRUE)) %>%
+  filter(antigen == "pgp3" & everpos ==1)
+
+# identify when they first became positive to Pgp3
+first_pgp3 <- d2_pgp3pos %>%
+  filter(seropos==1) %>%
+  group_by(childid) %>%
+  mutate(firstpos = min(timepoint),
+         firstpos = paste0(firstpos," month visit"),
+         firstpos = factor(firstpos, levels=paste0(c(6,9,12,18,24)," month visit"))
+  ) %>%
+  select(childid,firstpos) %>%
+  distinct()
+
+nrow(first_pgp3) # n=55 (!)
+
+# join back to data frame
+d2_pgp3pos2 <- d2_pgp3pos %>%
+  left_join(first_pgp3, join_by(childid))  %>%
+  # filter out a few (n=4) observations with missing MFI
+  filter(!is.na(mfi))
+
+# grab cutoffs for plotting
+pgp3cut  <- log10(d2$mficut[d2$antigen=="pgp3"][1])
+
+# custom log labels
+log10labs <- c( 
+  expression(10^0),
+  expression(10^1),
+  expression(10^2),
+  expression(10^3),
+  expression(10^4),
+  expression(10^5)
+)
+
+# make plot
+plot_mfi_long_pgp3_pos <- ggplot(data=d2_pgp3pos2, aes(x = age_months,y=log10mfi, group = childid)) +
+  facet_grid(community_type~firstpos) + 
+  geom_line(color=cbpal[7],alpha=0.8) +
+  geom_hline(yintercept = pgp3cut, lty="dashed") +
+  scale_x_continuous(breaks = c(6,9,12,15,18,21,24)) +
+  scale_y_continuous(breaks = 0:5, ) +
+  coord_cartesian(ylim=c(0,5)) + 
+  labs(x = "Age (months)", y = "log10 Pgp3 IgG Luminex response (MFI-bg)",subtitle="Visit of first seropositivity") +
+  # theme_minimal() +
+  theme(
+    panel.grid.minor.x = element_blank(),
+    axis.text.x = element_text(size=8),
+    plot.subtitle = element_text(hjust = 0.5),
+    strip.text.y = element_text(angle=0)
+  )
+
+plot_mfi_long_pgp3_pos
+
+
+
+ggsave(filename = here("output","ecomid_mfi_pgp3_by_age_comm.png"),plot_mfi_long_pgp3_pos, device="png",width = 200, height = 180, units = "mm")
+```
+
+## Individual child trajectories
+
+Plot Pgp3 and Ct694 for the 30 children who were seropositive to both at some point during follow-up. 
+
+Antibody responses to the two antigens are broadly consistent and seem to track longitudinally with high consistency in most cases. 
+
+```{r mfi by age pgp3 and ct694}
+#-------------------------------
+# in light of the large number
+# of pgp3 positive children above
+# examine ct694 as a confirmatory test
+#-------------------------------
+dct <- d2 %>%
+  group_by(childid, antigen) %>%
+  mutate(everpos = max(seropos)) %>%
+  filter(antigen %in% c("pgp3","ct694"))
+
+#-------------------------------
+# pivot the MFI and seropos
+# values to wide format by sample
+#-------------------------------
+dct2 <- dct %>%
+  select(community_type,sampleid,childid,timepoint, age_months, antigen,log10mfi,seropos) %>%
+  pivot_wider(id_cols=c("community_type","sampleid","childid","timepoint","age_months"),names_from = "antigen",values_from=c("log10mfi","seropos")) %>%
+  # create a joint seropositivity indicator
+  mutate(seropos_pgp3ct694 = ifelse(seropos_pgp3==1 & seropos_ct694==1,1,0))
+
+# of 104 samples seropositive to Pgp3, 63 were also seropositive to Ct694
+# of 65 samples seropositive to Ct694, 63 were also seropositive to Pgp3
+table(dct2$seropos_pgp3,dct2$seropos_ct694)
+
+
+#-------------------------------
+# identify when they first became positive to both
+# there are 31 children in this
+# set
+#-------------------------------
+firstpos_pgp3ct694 <- dct2 %>%
+  filter(seropos_pgp3ct694==1) %>%
+  group_by(childid) %>%
+  mutate(firstpos = min(timepoint),
+         firstpos = paste0("Age ",firstpos," months"),
+         firstpos = factor(firstpos, levels=paste0("Age ",c(6,9,12,18,24)," months"))
+  ) %>%
+  select(childid,firstpos) %>%
+  distinct()
+
+# join back to data frame
+dct3 <- dct2 %>%
+  left_join(first_pgp3, join_by(childid)) %>%
+  # create an arbitrary childid variable for plotting (to avoid plotting real IDs)
+  group_by(childid) %>%
+  mutate(childid_plot = paste0(substr(as.character(community_type),1,1),"-",sprintf("%03s",cur_group_id()))) %>%
+  # remove rows that have missing MFI values for the plot
+  filter(!is.na(log10mfi_ct694) | !is.na(log10mfi_pgp3))
+
+```
+
+
+
+```{r plot ct antigens for children positive to both, fig.height=10}
+#-------------------------------
+# plot MFI values for the
+# 31 children who were seropositive to both
+# antigens, Pgp3 and Ct694
+#-------------------------------
+
+# grab cutoffs for plotting
+pgp3cut  <- log10(d2$mficut[d2$antigen=="pgp3"][1])
+ct694cut <- log10(d2$mficut[d2$antigen=="ct694"][1])
+
+
+plot_pgp3ct694_mfi <- ggplot(dct3 %>% filter(childid %in% firstpos_pgp3ct694$childid), 
+                             aes(x=age_months,)) +
+  facet_wrap(.~childid_plot) +
+  # add cutoffs
+  geom_hline(yintercept = pgp3cut, lty="dashed", lwd=0.2, color=cbpal[2]) +
+  geom_hline(yintercept = ct694cut, lty="dashed", lwd=0.2, color=cbpal[6]) +
+
+  geom_line(aes(y=log10mfi_pgp3), alpha = 0.5, color=cbpal[7]) +
+  geom_line(aes(y=log10mfi_ct694), alpha = 0.5, color=cbpal[6]) +
+  scale_x_continuous(breaks = seq(6,24,by=6)) +
+  coord_cartesian(xlim=c(6,24),ylim=c(0,4.5)) +
+  # scale_color_manual(values=cbpal[2:3]) +
+  labs(x = "Age in months", y="log10 IgG Luminex response (MFI-bg)",
+       # title = "IgG trajectories for children seropositive to 2 antigens",
+       subtitle="Pgp3 (orange) and Ct694 (blue)") +
+  theme_minimal()
+
+plot_pgp3ct694_mfi
+
+ggsave(filename = here("output","ecomid-longtrajectories-pgp3ct694pos.png"),plot=plot_pgp3ct694_mfi, device = "png", width=120, height=200, units="mm")
+
+```
+
+
+Plot Pgp3 and Ct694 for the 24 children who were seropositive to Pgp3 only (not Ct694). 
+
+These longitudinal patterns are also consistent between antibody responses, and although Ct694 does not cross the seropositivity threshold it does track Pgp3 longitudinally in nearly all cases.  
+
+```{r plot ct antigens for children positive to just pgp3, fig.height=8}
+#-------------------------------
+# plot MFI values for the
+# 24 children who were seropositive to only
+# Pgp3 (and not Ct694)
+#-------------------------------
+# identify children just posiitive to Pgp3
+justpgp3 <- first_pgp3$childid[!first_pgp3$childid %in% firstpos_pgp3ct694$childid]
+length(justpgp3)
+
+# grab cutoffs for plotting
+pgp3cut  <- log10(d2$mficut[d2$antigen=="pgp3"][1])
+ct694cut <- log10(d2$mficut[d2$antigen=="ct694"][1])
+
+# make plot
+plot_pgp3_mfi <- ggplot(dct3 %>% filter(childid %in% justpgp3), 
+                             aes(x=age_months,)) +
+  facet_wrap(.~childid_plot, ncol=6) +
+  # add cutoffs
+  geom_hline(yintercept = pgp3cut, lty="dashed", lwd=0.2, color=cbpal[2]) +
+  geom_hline(yintercept = ct694cut, lty="dashed", lwd=0.2, color=cbpal[6]) +
+
+  geom_line(aes(y=log10mfi_pgp3), alpha = 0.5, color=cbpal[7]) +
+  geom_line(aes(y=log10mfi_ct694), alpha = 0.5, color=cbpal[6]) +
+  scale_x_continuous(breaks = seq(6,24,by=6)) +
+  coord_cartesian(xlim=c(6,24),ylim=c(0,4.5)) +
+  # scale_color_manual(values=cbpal[2:3]) +
+  labs(x = "Age in months", y="log10 IgG Luminex response (MFI-bg)",
+       # title = "IgG trajectories for children seropositive to just Pgp3",
+       subtitle="Pgp3 (orange) and Ct694 (blue)") +
+  theme_minimal()
+
+plot_pgp3_mfi
+
+ggsave(filename = here("output","ecomid-longtrajectories-pgp3pos.png"),plot=plot_pgp3_mfi, device = "png", width=120, height=160, units="mm")
+
+```
+
+
+# Seroprevalence by age
+
+
+```{r load Pgp3 antibody data}
+
+# filter to Pgp3 responses
+d3 <- d2 %>%
+  # filter( !antigen %in% c("gst","monitor","vero"))
+  filter(antigen=="pgp3") 
+
+```
+
+
+Average seroprevalence by age
+
+```{r seroprev by age}
+
+#-------------------------------
+# estimate seroprevalence 
+# by age and community type
+#-------------------------------
+dprev_age <- d3 %>%
+  mutate(community_type2 = case_when(
+    community_type %in% c("Rural Road","Rural River") ~ "Rural",
+    TRUE ~ as.character(community_type)
+    ),
+    community_type2 = factor(community_type2,levels=c("Esmeraldas","Borbon","Rural"))
+    )%>%
+  group_by(community_type2,timepoint) %>%
+  summarize(
+    nobs = sum(!is.na(seropos)),
+    npos = sum(seropos, na.rm=TRUE)
+  ) %>%
+  rowwise() %>%
+  mutate(
+    seroprev = (npos/nobs)*100,
+    seroprev_min95 = binom.test(x=npos,n=nobs)$conf.int[1]*100,
+    seroprev_max95 = binom.test(x=npos,n=nobs)$conf.int[2]*100
+  )
+
+kbl(dprev_age, digits=1)
+
+pcols <- RColorBrewer::brewer.pal(8,"Dark2")[3:1]
+plot_pgp3_by_age <- ggplot(data = dprev_age, 
+                           aes(x = timepoint, 
+                               y=seroprev,
+                               color=community_type2,
+                               fill=community_type2)
+                           ) +
+  facet_grid(.~community_type2) +
+  geom_point() +
+  geom_ribbon(aes(ymin=seroprev_min95,ymax=seroprev_max95),alpha=0.2,color=NA) +
+  geom_line() +
+  scale_x_continuous(breaks = c(0,6,9,12,18,24)) +
+  scale_y_continuous(breaks = seq(0,20,by=5)) +
+  scale_color_manual(values = pcols) +
+  scale_fill_manual(values = pcols) +
+  coord_cartesian(xlim=c(6,24)) +
+  labs(x = "Age (months)", y = "Seroprevalence (%)", title = "Pgp3 seroprevalence by age, ECoMiD") +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    panel.grid.minor.x = element_blank()
+  )
+
+plot_pgp3_by_age
+```
+
+
+
+# Estimate SCR longitudinal
+
+Estimate the seroconversion rate using incident seroconversions among children at risk.  Assume seroconversions occur at the mid-point between longitudinal measurements (for calculating person-time at risk). This is unbiased on average and a reasonable/standard approach.  
+
+Bootstrap resample children with replacement to estimate 95% CIs in the incidence rate. 
+
+For very rare events, where the bootstrap distribution is clearly unsmooth, use estimate an exact 95% CI using the Garwood (exact Poisson) confidence interval. 
+
+
+```{r identify incident seroconversions}
+
+#-------------------------------
+# create indicators for whether
+# a child is at risk of 
+# seroconversion and whether
+# they have an incident seroconversion
+# and tally person time at risk
+#
+# then, do the opposite, identifying
+# incident seroreversions among
+# those who were at risk (seropos)
+#-------------------------------
+d4 <- d3 %>%
+  # group by child and sort by visit
+  # to identify incident seroconversions
+  # estimate time at risk as diff
+  # in age between measurements when at risk
+  group_by(childid) %>%
+  arrange(childid,timepoint) %>%
+  mutate(
+    # incident seroconversions
+    atrisk = ifelse(seropos == 0, 1, 0),
+    lead_seropos = lead(seropos),
+    seroconv = ifelse(atrisk == 1 & seropos == 0 & lead_seropos == 1, 1, 0),
+    lead_age_years = lead(age_years),
+    pt = lead_age_years - age_years,
+    # assume seroconversion happened at the mid-point of the interval
+    # in cases of seroconversion, reduce person time by 1/2
+    pt = ifelse(seroconv==1, pt*0.5,pt),
+    # set persontime at risk to zero if the child is not at risk
+    pt = ifelse(atrisk == 0, 0, pt),
+    
+    # incident seroreversions and person-time at risk of reversion
+    atriskr = ifelse(seropos == 1, 1, 0),
+    serorev = ifelse(atriskr == 1 & seropos == 1 & lead_seropos == 0, 1, 0),
+    ptr = lead_age_years - age_years,
+    ptr = ifelse(serorev == 1, ptr*0.5, ptr),
+    ptr = ifelse(atriskr == 0, 0, ptr)
+
+    )
+
+```
+
+```{r estimate incidence rate}
+#-------------------------------
+# estimate the incidence rate
+# bootstrap resample children
+# to estimate the 95% CI
+#-------------------------------
+est_ir <- function(new_episode,pt) {
+  new_episodes <- sum(new_episode, na.rm=TRUE)
+  ptar <- sum(pt, na.rm=TRUE)
+  ir <- new_episodes/ptar
+  return(ir)
+}
+
+# observed estimated incidence rate
+ir_estimate <- est_ir(new_episode = d4$seroconv, pt = d4$pt)
+
+# boostrap resample
+idlist <- unique(d4$childid)
+nboot <- 1000
+set.seed(19373)
+boot_samp <- matrix(sample(idlist, size=length(idlist)*nboot, replace=TRUE ), nrow=length(idlist),ncol=nboot)
+ir_boots <- foreach(i = 1:nboot, .combine = rbind) %do% {
+  di <- left_join(data.frame(childid = boot_samp[,i]), d4, join_by(childid), relationship = "many-to-many")
+  iri <- est_ir(new_episode = di$seroconv, pt = di$pt)
+  return(iri)
+}
+# examine the bootstrap distribution to ensure it is smooth
+hist(ir_boots, breaks=40)
+# looks good (as expected)
+# estimate the percentile 95% CI from the boostrap distribution
+ir_min95 <- quantile(ir_boots, prob=0.025)
+ir_max95 <- quantile(ir_boots, prob=0.975)
+
+# return results
+cat("The longitudinal estimate of the SCR (bootstrap 95% CI) is:\n",
+    sprintf("%1.1f",ir_estimate*100)," (",sprintf("%1.1f",ir_min95*100),"to",sprintf("%1.1f",ir_max95*100),") per 100 person-years\n")
+
+# create a simple table of results
+scr_tab <- data.frame(
+  desc = "Pgp3 seroconversion",
+  nchild = length(unique(d4$childid)),
+  nseroc = sum(d4$seroconv,na.rm=TRUE),
+  ptar = sum(d4$pt,na.rm=TRUE),
+  ir = ir_estimate*100,
+  ir_min95 = ir_min95*100,
+  ir_max95 = ir_max95*100,
+  ir_print = paste0(sprintf("%1.1f",ir_estimate*100)," (",sprintf("%1.1f",ir_min95*100)," to ",sprintf("%1.1f",ir_max95*100),")")
+)
+
+kbl(scr_tab %>% select(-ir,-ir_min95,-ir_max95), caption = "Summary of incident seroconversions to Pgp3", col.names = c("","N children", "N seroconversions","Years at risk", "SCR (95% CI) per 100 person-years"))
+```
+
+## Stratified estimates by community type
+
+```{r stratified incidence estimates}
+#-------------------------------
+# identify community type from
+# sampleid
+#-------------------------------
+d5 <- d4 %>%
+  mutate(community_code = substr(sampleid,1,1),
+         community_type = case_when(
+           community_code == "E" ~ "Esmeraldas",
+           community_code == "B" ~ "Borbon",
+           TRUE ~ "Rural villages"),
+         community_type = factor(community_type, levels=c("Esmeraldas","Borbon","Rural villages"))
+  )
+
+# stratified datasets for convenience
+d5_e <- d5 %>% filter(community_type == "Esmeraldas")
+d5_b <- d5 %>% filter(community_type == "Borbon")
+d5_r <- d5 %>% filter(community_type == "Rural villages")
+#-------------------------------
+# observed estimated incidence rates
+#-------------------------------
+ir_estimate_e <- est_ir(new_episode = d5_e$seroconv, pt = d5_e$pt)
+ir_estimate_b <- est_ir(new_episode = d5_b$seroconv, pt = d5_b$pt)
+ir_estimate_r <- est_ir(new_episode = d5_r$seroconv, pt = d5_r$pt)
+```
+
+```{r stratified bootstraps}
+#-------------------------------
+# bootstrap esmeraldas, borbon and rural
+# villages
+#-------------------------------
+
+
+#-------------------------------
+# boostrap resample, Borbon
+#-------------------------------
+idlist <- unique(d5_e$childid)
+nboot <- 1000
+set.seed(234236)
+boot_samp_e <- matrix(sample(idlist, size=length(idlist)*nboot, replace=TRUE ), nrow=length(idlist),ncol=nboot)
+ir_boots <- foreach(i = 1:nboot, .combine = rbind) %do% {
+  di <- left_join(data.frame(childid = boot_samp[,i]), d5_e, join_by(childid), relationship = "many-to-many")
+  iri <- est_ir(new_episode = di$seroconv, pt = di$pt)
+  return(iri)
+}
+# examine the bootstrap distribution to ensure it is smooth
+hist(ir_boots, breaks=40)
+# looks good (as expected)
+# estimate the percentile 95% CI from the boostrap distribution
+ir_min95_e <- quantile(ir_boots, prob=0.025)
+ir_max95_e <- quantile(ir_boots, prob=0.975)
+
+
+#-------------------------------
+# boostrap resample, Borbon
+#-------------------------------
+idlist <- unique(d5_b$childid)
+nboot <- 1000
+set.seed(4578792)
+boot_samp_b <- matrix(sample(idlist, size=length(idlist)*nboot, replace=TRUE ), nrow=length(idlist),ncol=nboot)
+ir_boots <- foreach(i = 1:nboot, .combine = rbind) %do% {
+  di <- left_join(data.frame(childid = boot_samp[,i]), d5_b, join_by(childid), relationship = "many-to-many")
+  iri <- est_ir(new_episode = di$seroconv, pt = di$pt)
+  return(iri)
+}
+# examine the bootstrap distribution to ensure it is smooth
+hist(ir_boots, breaks=40)
+# it is not smooth. So instead estimate the
+# exact Garwood 95% CI by inverting the poisson distribution
+# estimate the percentile 95% CI from the boostrap distribution
+events_b <- sum(d5_b$seroconv, na.rm=TRUE)
+pt_b <- sum(d5_b$pt, na.rm=TRUE)
+ci_b <- poisson.test(events_b, pt_b, conf.level = 0.95)$conf.int
+ir_min95_b <- ci_b[1]
+ir_max95_b <- ci_b[2]
+
+#-------------------------------
+# boostrap resample, Rural villages
+#-------------------------------
+idlist <- unique(d5_r$childid)
+nboot <- 1000
+set.seed(234234)
+boot_samp_b <- matrix(sample(idlist, size=length(idlist)*nboot, replace=TRUE ), nrow=length(idlist),ncol=nboot)
+ir_boots <- foreach(i = 1:nboot, .combine = rbind) %do% {
+  di <- left_join(data.frame(childid = boot_samp[,i]), d5_r, join_by(childid), relationship = "many-to-many")
+  iri <- est_ir(new_episode = di$seroconv, pt = di$pt)
+  return(iri)
+}
+# examine the bootstrap distribution to ensure it is smooth
+hist(ir_boots, breaks=40)
+# looks good (as expected)
+# estimate the percentile 95% CI from the boostrap distribution
+ir_min95_r <- quantile(ir_boots, prob=0.025)
+ir_max95_r <- quantile(ir_boots, prob=0.975)
+
+```
+
+```{r summarize stratified results}
+#-------------------------------
+# bring all of the information
+# together into a single table
+#-------------------------------
+scr_tab_e <- data.frame(
+  desc = "Esmeraldas",
+  nchild = length(unique(d5_e$childid)),
+  nseroc = sum(d5_e$seroconv,na.rm=TRUE),
+  ptar = sum(d5_e$pt,na.rm=TRUE),
+  ir = ir_estimate_e*100,
+  ir_min95 = ir_min95_e*100,
+  ir_max95 = ir_max95_e*100,
+  ir_print = paste0(sprintf("%1.1f",ir_estimate_e*100)," (",sprintf("%1.1f",ir_min95_e*100)," to ",sprintf("%1.1f",ir_max95_e*100),")")
+)
+
+scr_tab_b <- data.frame(
+  desc = "Borbon",
+  nchild = length(unique(d5_b$childid)),
+  nseroc = sum(d5_b$seroconv,na.rm=TRUE),
+  ptar = sum(d5_b$pt,na.rm=TRUE),
+  ir = ir_estimate_b*100,
+  ir_min95 = ir_min95_b*100,
+  ir_max95 = ir_max95_b*100,
+  ir_print = paste0(sprintf("%1.1f",ir_estimate_b*100)," (",sprintf("%1.1f",ir_min95_b*100)," to ",sprintf("%1.1f",ir_max95_b*100),")")
+)
+
+scr_tab_r <- data.frame(
+  desc = "Rural villages",
+  nchild = length(unique(d5_r$childid)),
+  nseroc = sum(d5_r$seroconv,na.rm=TRUE),
+  ptar = sum(d5_r$pt,na.rm=TRUE),
+  ir = ir_estimate_r*100,
+  ir_min95 = ir_min95_r*100,
+  ir_max95 = ir_max95_r*100,
+  ir_print = paste0(sprintf("%1.1f",ir_estimate_r*100)," (",sprintf("%1.1f",ir_min95_r*100)," to ",sprintf("%1.1f",ir_max95_r*100),")")
+)
+
+scr_tab_all <- bind_rows(scr_tab_e,scr_tab_b,scr_tab_r)
+
+kbl(scr_tab_all %>% select(-ir,-ir_min95,-ir_max95), caption = "Summary of incident seroconversions to Pgp3", col.names = c("","N children", "N seroconversions","Years at risk", "SCR (95% CI) per 100 person-years"))
+
+#-------------------------------
+# save the results to a csv 
+# file for future use
+# include Overall as first row!
+#-------------------------------
+scr_res <- bind_rows(scr_tab, scr_tab_all)
+write_csv(scr_res, file = here("output","ecomid_long_scr_by_community_pgp3.csv"))
+```
+
+# Estimate SRR longitudinal
+
+## Overall rate, 6-24m
+Since there are so few periods at risk of sero-reversion, first estimate the overall rate
+
+```{r}
+#| label: estimate longitudinal SRR 6 to 24m
+
+#-------------------------------
+# estimate the seroreversion rate
+# bootstrap resample children
+# to estimate the 95% CI
+#-------------------------------
+
+# observed estimated seroreversion rate
+srr_estimate <- est_ir(new_episode = d4$serorev, pt = d4$ptr)
+
+# boostrap resample
+idlist <- unique(d4$childid)
+nboot <- 1000
+set.seed(19373)
+boot_samp <- matrix(sample(idlist, size=length(idlist)*nboot, replace=TRUE ), nrow=length(idlist),ncol=nboot)
+srr_boots <- foreach(i = 1:nboot, .combine = rbind) %do% {
+  di <- left_join(data.frame(childid = boot_samp[,i]), d4, join_by(childid), relationship = "many-to-many")
+  iri <- est_ir(new_episode = di$serorev, pt = di$ptr)
+  return(iri)
+}
+# examine the bootstrap distribution to ensure it is smooth
+hist(srr_boots, breaks=40)
+# looks good (as expected)
+# estimate the percentile 95% CI from the boostrap distribution
+srr_min95 <- quantile(srr_boots, prob=0.025)
+srr_max95 <- quantile(srr_boots, prob=0.975)
+
+# return results
+cat("The longitudinal estimate of the SRR (bootstrap 95% CI) is:\n",
+    sprintf("%1.1f",srr_estimate*100)," (",sprintf("%1.1f",srr_min95*100),"to",sprintf("%1.1f",srr_max95*100),") per 100 person-years\n")
+
+# create a simple table of results
+srr_tab <- data.frame(
+  desc = "Pgp3 seroreversion 6-24m",
+  nchild = length(unique(d4$childid)),
+  nseror = sum(d4$serorev,na.rm=TRUE),
+  ptarr = sum(d4$ptr,na.rm=TRUE),
+  srr = srr_estimate*100,
+  srr_min95 = srr_min95*100,
+  srr_max95 = srr_max95*100,
+  srr_print = paste0(sprintf("%1.1f",srr_estimate*100)," (",sprintf("%1.1f",srr_min95*100)," to ",sprintf("%1.1f",srr_max95*100),")")
+)
+
+kbl(srr_tab %>% select(-srr,-srr_min95,-srr_max95), caption = "Summary of incident seroreversions to Pgp3, 6-24m", col.names = c("","N children", "N seroreversions","Years at risk", "SRR (95% CI) per 100 person-years"))
+
+
+
+```
+
+## Rate 12-24m
+
+Examination of longitudinal trajectories of children suggests that some sero-reversion could be due to loss of maternal IgG during the first 12 months.  Estimate the seroreversion rate among children who were Pgp3 positive at 12 or 18 months. 
+
+
+```{r}
+#| label: estimate longitudinal SRR 12 to 24m
+
+#-------------------------------
+# estimate the seroreversion rate
+# bootstrap resample children
+# to estimate the 95% CI
+#
+# limit the data to 12-24m
+#-------------------------------
+
+d4_12to24m <- d4 %>%
+  filter(timepoint %in% c(12, 18, 24))
+
+# observed estimated seroreversion rate
+srr_estimate <- est_ir(new_episode = d4_12to24m$serorev, pt = d4_12to24m$ptr)
+
+# boostrap resample
+idlist <- unique(d4_12to24m$childid)
+nboot <- 1000
+set.seed(19373)
+boot_samp <- matrix(sample(idlist, size=length(idlist)*nboot, replace=TRUE ), nrow=length(idlist),ncol=nboot)
+srr_boots <- foreach(i = 1:nboot, .combine = rbind) %do% {
+  di <- left_join(data.frame(childid = boot_samp[,i]), d4_12to24m, join_by(childid), relationship = "many-to-many")
+  iri <- est_ir(new_episode = di$serorev, pt = di$ptr)
+  return(iri)
+}
+# examine the bootstrap distribution to ensure it is smooth
+hist(srr_boots, breaks=40)
+# looks good (as expected)
+# estimate the percentile 95% CI from the boostrap distribution
+srr_min95 <- quantile(srr_boots, prob=0.025)
+srr_max95 <- quantile(srr_boots, prob=0.975)
+
+# return results
+cat("The longitudinal estimate of the SRR 12-24m (bootstrap 95% CI) is:\n",
+    sprintf("%1.1f",srr_estimate*100)," (",sprintf("%1.1f",srr_min95*100),"to",sprintf("%1.1f",srr_max95*100),") per 100 person-years\n")
+
+# create a simple table of results
+srr_tab_12to24 <- data.frame(
+  desc = "Pgp3 seroreversion 12-24m",
+  nchild = length(unique(d4_12to24m$childid)),
+  nseror = sum(d4_12to24m$serorev,na.rm=TRUE),
+  ptarr = sum(d4_12to24m$ptr,na.rm=TRUE),
+  srr = srr_estimate*100,
+  srr_min95 = srr_min95*100,
+  srr_max95 = srr_max95*100,
+  srr_print = paste0(sprintf("%1.1f",srr_estimate*100)," (",sprintf("%1.1f",srr_min95*100)," to ",sprintf("%1.1f",srr_max95*100),")")
+)
+
+kbl(srr_tab_12to24 %>% select(-srr,-srr_min95,-srr_max95), caption = "Summary of incident seroreversions to Pgp3, 12-24m", col.names = c("","N children", "N seroreversions","Years at risk", "SRR (95% CI) per 100 person-years"))
+
+
+#-------------------------------
+# save the results to a csv 
+# file for future use
+#-------------------------------
+srr_res <- bind_rows(srr_tab, srr_tab_12to24)
+write_csv(srr_res, file = here("output","ecomid_long_srr_pgp3.csv"))
+```
+
+# Sensitivity analysis: SCR Pgp3+Ct694
+
+As a sensitivity analysis, estimate the seroconversion rate requiring a child to be positive to both Pgp3 and Ct694. Many global monitoring studies rely on Pgp3 alone, but requiring a sample to be positive to both antigens should (in theory) increase the specificity of the assay.
+
+By restricting the definition of seropositivity and seroconversion to samples positive to both Pgp3 and Ct694, we also rule out a couple of examples of "weak" seroconversions where a child's IgG to Pgp3 just barely crosses the cutoff, which could be due to chance. 
+
+```{r }
+#| label: identify incident seroconversions pgp3 and ct694
+
+#-------------------------------
+# create indicators for whether
+# a child is at risk of 
+# seroconversion and whether
+# they have an incident seroconversion
+# and tally person time at risk
+#
+# then, do the opposite, identifying
+# incident seroreversions among
+# those who were at risk (seropos)
+#-------------------------------
+
+d6 <- d2 %>%
+  # filter to Pgp3 and Ct694
+  filter(antigen %in% c("pgp3","ct694")) %>%
+  select(community_type,childid,timepoint,age_years,sampleid,antigen,seropos) %>%
+  pivot_wider(id_cols = c(community_type,childid,timepoint,age_years,sampleid),names_from = "antigen", values_from = "seropos") %>%
+  mutate(seropos = ifelse(pgp3==1 & ct694==1,1,0),
+         antigen = "pgp3-ct694") %>%
+  # group by child and sort by visit
+  # to identify incident seroconversions
+  # estimate time at risk as diff
+  # in age between measurements when at risk
+  group_by(childid) %>%
+  arrange(childid,timepoint) %>%
+  mutate(
+    # incident seroconversions
+    atrisk = ifelse(seropos == 0, 1, 0),
+    lead_seropos = lead(seropos),
+    seroconv = ifelse(atrisk == 1 & seropos == 0 & lead_seropos == 1, 1, 0),
+    lead_age_years = lead(age_years),
+    pt = lead_age_years - age_years,
+    # assume seroconversion happened at the mid-point of the interval
+    # in cases of seroconversion, reduce person time by 1/2
+    pt = ifelse(seroconv==1, pt*0.5,pt),
+    # set persontime at risk to zero if the child is not at risk
+    pt = ifelse(atrisk == 0, 0, pt)
+    )
+
+```
+
+```{r incidence estimates pgp3ct694}
+
+# observed estimated incidence rate
+ir_estimate <- est_ir(new_episode = d6$seroconv, pt = d6$pt)
+
+# boostrap resample
+idlist <- unique(d6$childid)
+nboot <- 1000
+set.seed(357295)
+boot_samp <- matrix(sample(idlist, size=length(idlist)*nboot, replace=TRUE ), nrow=length(idlist),ncol=nboot)
+ir_boots <- foreach(i = 1:nboot, .combine = rbind) %do% {
+  di <- left_join(data.frame(childid = boot_samp[,i]), d6, join_by(childid), relationship = "many-to-many")
+  iri <- est_ir(new_episode = di$seroconv, pt = di$pt)
+  return(iri)
+}
+# examine the bootstrap distribution to ensure it is smooth
+hist(ir_boots, breaks=40)
+# looks good (as expected)
+# estimate the percentile 95% CI from the boostrap distribution
+ir_min95 <- quantile(ir_boots, prob=0.025)
+ir_max95 <- quantile(ir_boots, prob=0.975)
+
+# return results
+cat("The longitudinal estimate of the SCR using Pgp3+Ct694 (bootstrap 95% CI) is:\n",
+    sprintf("%1.1f",ir_estimate*100)," (",sprintf("%1.1f",ir_min95*100),"to",sprintf("%1.1f",ir_max95*100),") per 100 person-years\n")
+
+# create a simple table of results
+scr_tab <- data.frame(
+  desc = "Pgp3 and Ct694 seroconversion",
+  nchild = length(unique(d6$childid)),
+  nseroc = sum(d6$seroconv,na.rm=TRUE),
+  ptar = sum(d6$pt,na.rm=TRUE),
+  ir = ir_estimate*100,
+  ir_min95 = ir_min95*100,
+  ir_max95 = ir_max95*100,
+  ir_print = paste0(sprintf("%1.1f",ir_estimate*100)," (",sprintf("%1.1f",ir_min95*100)," to ",sprintf("%1.1f",ir_max95*100),")")
+)
+
+kbl(scr_tab %>% select(-ir,-ir_min95,-ir_max95), caption = "Summary of incident seroconversions to Pgp3+Ct694", col.names = c("","N children", "N seroconversions","Years at risk", "SCR (95% CI) per 100 person-years"))
+```
+
+## Stratified estimates by community
+
+```{r stratified incidence estimates pgp3ct694}
+#-------------------------------
+# identify community type from
+# sampleid
+#-------------------------------
+d7 <- d6 %>%
+  mutate(community_code = substr(sampleid,1,1),
+         community_type = case_when(
+           community_code == "E" ~ "Esmeraldas",
+           community_code == "B" ~ "Borbon",
+           TRUE ~ "Rural villages"),
+         community_type = factor(community_type, levels=c("Esmeraldas","Borbon","Rural villages"))
+  )
+
+# stratified datasets for convenience
+d7_e <- d7 %>% filter(community_type == "Esmeraldas")
+d7_b <- d7 %>% filter(community_type == "Borbon")
+d7_r <- d7 %>% filter(community_type == "Rural villages")
+#-------------------------------
+# observed estimated incidence rates
+#-------------------------------
+ir_estimate_e <- est_ir(new_episode = d7_e$seroconv, pt = d7_e$pt)
+ir_estimate_b <- est_ir(new_episode = d7_b$seroconv, pt = d7_b$pt)
+ir_estimate_r <- est_ir(new_episode = d7_r$seroconv, pt = d7_r$pt)
+```
+
+```{r stratified bootstraps pgp3ct694 }
+#-------------------------------
+# bootstrap esmeraldas, borbon and rural
+# villages
+#-------------------------------
+
+#-------------------------------
+# boostrap resample, Esmeraldas
+#-------------------------------
+idlist <- unique(d7_e$childid)
+nboot <- 1000
+set.seed(234236)
+boot_samp_e <- matrix(sample(idlist, size=length(idlist)*nboot, replace=TRUE ), nrow=length(idlist),ncol=nboot)
+ir_boots <- foreach(i = 1:nboot, .combine = rbind) %do% {
+  di <- left_join(data.frame(childid = boot_samp[,i]), d7_e, join_by(childid), relationship = "many-to-many")
+  iri <- est_ir(new_episode = di$seroconv, pt = di$pt)
+  return(iri)
+}
+# examine the bootstrap distribution to ensure it is smooth
+hist(ir_boots, breaks=40)
+# it is not smooth. So instead estimate the
+# exact Garwood 95% CI by inverting the poisson distribution
+# estimate the percentile 95% CI from the boostrap distribution
+events_e <- sum(d7_e$seroconv, na.rm=TRUE)
+pt_e <- sum(d7_e$pt, na.rm=TRUE)
+ci_e <- poisson.test(events_e, pt_e, conf.level = 0.95)$conf.int
+ir_min95_e <- ci_e[1]
+ir_max95_e <- ci_e[2]
+
+
+#-------------------------------
+# boostrap resample, Borbon
+#-------------------------------
+idlist <- unique(d7_b$childid)
+nboot <- 1000
+set.seed(4578792)
+boot_samp_b <- matrix(sample(idlist, size=length(idlist)*nboot, replace=TRUE ), nrow=length(idlist),ncol=nboot)
+ir_boots <- foreach(i = 1:nboot, .combine = rbind) %do% {
+  di <- left_join(data.frame(childid = boot_samp[,i]), d7_b, join_by(childid), relationship = "many-to-many")
+  iri <- est_ir(new_episode = di$seroconv, pt = di$pt)
+  return(iri)
+}
+# examine the bootstrap distribution to ensure it is smooth
+hist(ir_boots, breaks=40)
+# it is not smooth. So instead estimate the
+# exact Garwood 95% CI by inverting the poisson distribution
+# estimate the percentile 95% CI from the boostrap distribution
+events_b <- sum(d7_b$seroconv, na.rm=TRUE)
+pt_b <- sum(d7_b$pt, na.rm=TRUE)
+ci_b <- poisson.test(events_b, pt_b, conf.level = 0.95)$conf.int
+ir_min95_b <- ci_b[1]
+ir_max95_b <- ci_b[2]
+
+#-------------------------------
+# boostrap resample, Rural villages
+#-------------------------------
+idlist <- unique(d7_r$childid)
+nboot <- 1000
+set.seed(234234)
+boot_samp_b <- matrix(sample(idlist, size=length(idlist)*nboot, replace=TRUE ), nrow=length(idlist),ncol=nboot)
+ir_boots <- foreach(i = 1:nboot, .combine = rbind) %do% {
+  di <- left_join(data.frame(childid = boot_samp[,i]), d7_r, join_by(childid), relationship = "many-to-many")
+  iri <- est_ir(new_episode = di$seroconv, pt = di$pt)
+  return(iri)
+}
+# examine the bootstrap distribution to ensure it is smooth
+hist(ir_boots, breaks=40)
+# looks good (as expected)
+# estimate the percentile 95% CI from the boostrap distribution
+ir_min95_r <- quantile(ir_boots, prob=0.025)
+ir_max95_r <- quantile(ir_boots, prob=0.975)
+
+```
+
+
+```{r summarize stratified results pgp3ct694}
+#-------------------------------
+# bring all of the information
+# together into a single table
+#-------------------------------
+scr_tab_e <- data.frame(
+  desc = "Esmeraldas",
+  nchild = length(unique(d7_e$childid)),
+  nseroc = sum(d7_e$seroconv,na.rm=TRUE),
+  ptar = sum(d7_e$pt,na.rm=TRUE),
+  ir = ir_estimate_e*100,
+  ir_min95 = ir_min95_e*100,
+  ir_max95 = ir_max95_e*100,
+  ir_print = paste0(sprintf("%1.1f",ir_estimate_e*100)," (",sprintf("%1.1f",ir_min95_e*100)," to ",sprintf("%1.1f",ir_max95_e*100),")")
+)
+
+scr_tab_b <- data.frame(
+  desc = "Borbon",
+  nchild = length(unique(d7_b$childid)),
+  nseroc = sum(d7_b$seroconv,na.rm=TRUE),
+  ptar = sum(d7_b$pt,na.rm=TRUE),
+  ir = ir_estimate_b*100,
+  ir_min95 = ir_min95_b*100,
+  ir_max95 = ir_max95_b*100,
+  ir_print = paste0(sprintf("%1.1f",ir_estimate_b*100)," (",sprintf("%1.1f",ir_min95_b*100)," to ",sprintf("%1.1f",ir_max95_b*100),")")
+)
+
+scr_tab_r <- data.frame(
+  desc = "Rural villages",
+  nchild = length(unique(d7_r$childid)),
+  nseroc = sum(d7_r$seroconv,na.rm=TRUE),
+  ptar = sum(d7_r$pt,na.rm=TRUE),
+  ir = ir_estimate_r*100,
+  ir_min95 = ir_min95_r*100,
+  ir_max95 = ir_max95_r*100,
+  ir_print = paste0(sprintf("%1.1f",ir_estimate_r*100)," (",sprintf("%1.1f",ir_min95_r*100)," to ",sprintf("%1.1f",ir_max95_r*100),")")
+)
+
+scr_tab_pgp3ct694 <- bind_rows(scr_tab_e,scr_tab_b,scr_tab_r)
+
+kbl(scr_tab_pgp3ct694 %>% select(-ir,-ir_min95,-ir_max95), caption = "Summary of incident seroconversions to Pgp3+Ct694", col.names = c("","N children", "N seroconversions","Years at risk", "SCR (95% CI) per 100 person-years"))
+
+#-------------------------------
+# save the results to a csv 
+# file for future use
+# include Overall as first row!
+#-------------------------------
+scr_res <- bind_rows(scr_tab, scr_tab_pgp3ct694)
+write_csv(scr_res, file = here("output","ecomid_long_scr_by_community_pgp3ct694.csv"))
+```
+
+
+# Session Info
+```{r session info}
+sessionInfo()
+```
+
+

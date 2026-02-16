@@ -1,0 +1,132 @@
+---
+title: "Integrated serosurveillance to assess disease elimination in coastal Ecuador"
+subtitle: "Summarize study population characteristics"
+author: "Lesly Simbaña Vivanco (lsimbana@usfq.edu.ec) and Nikolina Walas (nikolina.walas@ucsf.edu)"
+date: "updated: `r Sys.time()`"
+format:
+  html:
+    self-contained: true
+    toc: true
+    embed-resources: true
+    code-fold: true
+    link-external-newwindow: true
+execute: 
+  echo: true
+  warning: false
+  message: false
+---
+
+## Overview
+
+The purpose of this file is to generate a table 1 of participant characteristics for the serological analysis to assess transmission of oncho, yaws, cholera, and trachoma in ECoMiD.
+
+## Load packages
+
+```{r}
+library(here)
+source(here("R", "0-config.R"))
+
+# unload the raster package to avoid conflicts with dplyr::select
+detach("package:raster", unload = TRUE)
+```
+
+## Read in files
+
+```{r}
+# Dataset to pull demographic info from 
+d <- read_rds(here("../../data/serology/final/ecomid_serology_datasets","ecomid_sero_antigen_seropos_long_2025-12-18.rds"))
+d$house_ID <- str_sub(d$childid, -4)
+
+# Participant information
+survey <- read.csv(here("../../Data/ecomid-field/final/surveydata_20251003.csv"))
+survey$house_ID <- str_pad(survey$house_ID, width = 4, pad = "0")
+
+survey_consolidated <- survey %>% filter(survey$house_ID %in% d$house_ID) %>% left_join(d %>% select(house_ID, community_type, community_name)) %>% unique()
+
+# add in sub-community variable (rural and rural-river)
+survey_consolidated <- survey_consolidated %>% mutate(ct = case_when(
+  community_name == "Esmeraldas" ~ "Esmeraldas",
+      community_name == "Borbon" ~ "Borbon",
+      community_name %in% c("Maldonado", "Colon Eloy", "Timbire", "Zancudo", "Selva Alegre") ~ "Rural Road",
+      community_name %in% c("Zancudo", "Colon de Onzole", "Santo Domingo", "San Francisco") ~ "Rural River"
+))
+
+# assign levels
+survey_consolidated$ct <- factor(survey_consolidated$ct,
+                    levels = c("Esmeraldas", "Borbon", "Rural Road", "Rural River"))
+
+```
+
+## Table 1 generation
+
+Select variables relevant to this analysis
+
+```{r}
+names(survey_consolidated)
+# Check number of children in the final set 
+length(unique(survey_consolidated$house_ID))
+
+# Re-code variables 
+survey_consolidated <- survey_consolidated %>% 
+  mutate(mom_ethnicity2 = case_when(mom_ethnicity == 1 ~ "Afro-Ecuadorian", 
+                                    mom_ethnicity == 2 ~ "Chachi", 
+                                    mom_ethnicity == 3 ~ "Mestizo", 
+                                    mom_ethnicity == 4 ~ "Manabi",
+                                    TRUE ~ "other"))
+# Add appropriate levels 
+survey_consolidated$mom_ethnicity2 <- factor(survey_consolidated$mom_ethnicity2,
+                    levels = c("Afro-Ecuadorian", "Chachi", "Manabi", "Mestizo", "other"))
+
+# Household crowding and type of birth
+survey_consolidated <- survey_consolidated %>% 
+  mutate(hhcrowd2 = ifelse(hhcrowd == 0, "< 3 people", ">= 3 people"), 
+         typebirth2 = ifelse(typebirth == 1, "Vaginal", "C-section"), 
+         sexo_nino2 = ifelse(sexo_nino == 1, "Male", "Female"))
+         
+# Add appropriate levels 
+survey_consolidated$typebirth2 <- factor(survey_consolidated$typebirth2,
+                    levels = c("C-section", "Vaginal"))
+survey_consolidated$hhcrowd2 <- factor(survey_consolidated$hhcrowd2,
+                    levels = c(">= 3 people", "< 3 people"))
+
+# Re-code the last couple of variables (E. coli detection)
+  
+survey_consolidated <- survey_consolidated %>% 
+  mutate(
+  storewat2 = case_when(
+    as.numeric(storewat) == 0 ~ "No",
+    as.numeric(storewat) == 1 ~ "Yes",
+    TRUE ~ "Missing"
+  ),
+  
+  # Recodificación de AGUA EN CASA DETECTADA (wat_detect)
+  wat_detect2 = case_when(
+    as.numeric(wat_detect) == 0 ~ "Not detected",
+    as.numeric(wat_detect) == 1 ~ "Low or High",
+    TRUE ~ "Missing"
+  ),
+  
+  # Recodificación de MANOS DE MADRE DETECTADA (mhand_detect)
+  mhand_detect2 = case_when(
+    as.numeric(mhand_detect) == 0 ~ "Not detected",
+    as.numeric(mhand_detect) == 1 ~ "Low or High",
+    TRUE ~ "Missing"
+  ), 
+  
+  # Recode hand detection of E. coli
+  chand_detect2 = case_when(
+    as.numeric(chand_detect) == 0 ~ "Not detected",
+    as.numeric(chand_detect) == 1 ~ "Low or High",
+    TRUE ~ NA))
+  
+
+
+# Make table 
+library(table1)
+table1 <- table1(~ factor(hhwealthquart) + factor(mom_ethnicity2) + factor(hhcrowd2) + factor(sexo_nino2) + typebirth2 +storewat2 + wat_detect2 + mhand_detect2 + chand_detect2
+                 
+                 | ct, data=survey_consolidated)
+table1
+
+table1 %>% write.csv(here("output/table1_updated_nw.csv"))
+```
