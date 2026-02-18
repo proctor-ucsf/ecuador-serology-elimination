@@ -26,9 +26,6 @@ here()
 #----------------------------
 source(here("R","0-config.R"))
 
-# unload the raster package to avoid conflicts with dplyr::select
-detach("package:raster", unload = TRUE)
-
 ```
 
 # Load the Luminex IgG data
@@ -41,7 +38,7 @@ detach("package:raster", unload = TRUE)
 #
 # data are in long format
 #-------------------------------
-d <- read_rds(here("../../data/serology/final/ecomid_serology_datasets","ecomid_sero_antigen_seropos_long_2025-12-18.rds"))
+d <- read_rds(here("~/Library/CloudStorage/Box-Box/EcoMid/data/serology/final/ecomid_serology_datasets","ecomid_sero_antigen_seropos_long_2025-12-18.rds"))
 ```
 
 ```{r process antibody data}
@@ -51,13 +48,12 @@ d <- read_rds(here("../../data/serology/final/ecomid_serology_datasets","ecomid_
 # indicators
 #-------------------------------
 d1 <- d %>%
-  filter( antigen %in% c("ov16","rp17","tmpa","osp_in","osp_o","pgp3")) %>%
+  filter( antigen %in% c("ov16","rp17","tmpa","pgp3")) %>%
   select(community_type,childid,timepoint,antigen, seropos) %>%
   pivot_wider(id_cols=c(community_type,childid,timepoint),names_from = "antigen", values_from = "seropos") %>%
   mutate(oncho=ov16,
          trachoma = pgp3,
-         yaws = ifelse(rp17 == 1 & tmpa==1, 1, 0),
-         cholera = ifelse(osp_in == 1 & osp_o == 1, 1, 0)
+         yaws = ifelse(rp17 == 1 & tmpa==1, 1, 0)         
          ) 
 
 #-------------------------------
@@ -65,8 +61,8 @@ d1 <- d %>%
 # back to long format
 #-------------------------------
 d2 <- d1 %>%
-  select(community_type,childid,timepoint,oncho,trachoma,yaws,cholera) %>%
-  pivot_longer(cols=c(oncho,trachoma,yaws,cholera), names_to = "pathogen", values_to = "seropos")
+  select(community_type,childid,timepoint,oncho,trachoma,yaws) %>%
+  pivot_longer(cols=c(oncho,trachoma,yaws), names_to = "pathogen", values_to = "seropos")
 ```
 
 # Estimate seroprevalence

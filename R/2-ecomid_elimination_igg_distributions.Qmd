@@ -26,9 +26,6 @@ here()
 #----------------------------
 source(here("R","0-config.R"))
 
-# unload the raster package to avoid conflicts with dplyr::select
-detach("package:raster", unload = TRUE)
-
 ```
 
 # Load the Luminex IgG data
@@ -41,7 +38,7 @@ detach("package:raster", unload = TRUE)
 #
 # data are in long format
 #-------------------------------
-d <- read_rds(here("../../data/serology/final/ecomid_serology_datasets","ecomid_sero_antigen_seropos_long_2025-12-18.rds"))
+d <- read_rds(here("~/Library/CloudStorage/Box-Box/EcoMid/data/serology/final/ecomid_serology_datasets","ecomid_sero_antigen_seropos_long_2025-12-18.rds"))
 
 
 #-------------------------------
@@ -50,9 +47,9 @@ d <- read_rds(here("../../data/serology/final/ecomid_serology_datasets","ecomid_
 # plotting in order
 #-------------------------------
 d1 <- d %>%
-  filter(antigen %in% c("pgp3","ct694","rp17","tmpa","osp_in","osp_o","ov16")) %>%
+  filter(antigen %in% c("pgp3","ct694","rp17","tmpa","ov16")) %>%
   mutate(antigen_plot = antigen_lab,
-         antigen_plot = factor(antigen_plot, levels=c("C. trachomatis Pgp3","C. trachomatis CT694","T. palladium rp17","T. palladium tmpa","V. cholerae OSP-Inaba","V. cholerae OSP-Ogawa","O. volvulus Ov16")))
+         antigen_plot = factor(antigen_plot, levels=c("C. trachomatis Pgp3","C. trachomatis CT694","T. palladium rp17","T. palladium tmpa","O. volvulus Ov16")))
 ```
 
 
@@ -92,7 +89,7 @@ plot_igg_dists <- ggplot(data=d1, aes(x=log10mfi)) +
 
 plot_igg_dists
 
-ggsave(filename = here("output","ecomid_igg_distributions.png"),plot_igg_dists, device = "png",height = 180,width=120, units = "mm")
+ggsave(filename = here("output","ecomid_igg_distributions.png"),plot_igg_dists, device = "png",height = 150,width=120, units = "mm")
 
 ```
 
