@@ -40,7 +40,7 @@ library(patchwork)
 #
 # data are in long format
 #-------------------------------
-d <- read_rds(here("../../data/serology/final/ecomid_serology_datasets","ecomid_sero_antigen_seropos_long_v02_20261007.rds"))
+d <- read_rds(here("~/Library/CloudStorage/Box-Box/EcoMID/data/serology/final/ecomid_serology_datasets","ecomid_sero_antigen_seropos_long_v02_20261007.rds"))
 
 # drop monitoring targets
 d1 <- d %>%
@@ -52,7 +52,7 @@ d1 <- d %>%
 # load child visit data for
 # exact dates at age of DBS collection
 #-------------------------------
-dvisit <- read_rds(file=here("../../data/ecomid-field/final","ecomid_child_visit_info_2026-06-15.rds"))
+dvisit <- read_rds(file=here("~/Library/CloudStorage/Box-Box/EcoMID/data/ecomid-field/final","ecomid_child_visit_info_2026-06-15.rds"))
 
 #-------------------------------
 # join visit ages to serology
@@ -245,32 +245,6 @@ ggsave(filename = here("output","ecomid-longtrajectories-oncho-yaws-composite.pn
 # ggsave(filename = here("output","figureS1-ecomid-longtrajectories-oncho-yaws-composite.tiff"), plot_composite, device = "tiff", width = 220, height = 160, units = "mm")
 ```
 
-# Investigate AB8014
-Sample had a spike in MFI at 9 months for all three antigens (Oncho, Yaws). Investigate if this trend was for other antigens on the panel. 
-```{r}
-# Pull sample
-d_ab8014 <- d2 %>% filter(childid == "AB8014")
-
-# plot
-plot_ab8014 <- ggplot(d_ab8014, aes(x = age_months, y = log10mfi)) +
-  facet_wrap(~antigen_lab, scales = "free_y") +
-  geom_hline(aes(yintercept = log10(mficut)), lty = "dashed", color = "grey40") +
-  geom_line(color = cbpal[7], alpha = 0.7) +
-  geom_point(color = cbpal[7], alpha = 0.7, size = 1.5) +
-  scale_x_continuous(breaks = c(6,9,12,18,24)) +
-  labs(x = "Age in months", y = "log10 IgG Luminex response (MFI-bg)",
-       title = "Child AB8014: IgG trajectories across all antigens") +
-  theme_minimal(base_size = 12) +
-  theme(strip.text = element_text(size = 9),
-        axis.text.x = element_text(size = 8, angle = 45, hjust = 1))
-plot_ab8014
-
-# export
-ggsave(filename = here("output","ecomid-child-AB8014.png"),
-       plot = plot_ab8014, device = "png", width = 250, height = 200, units = "mm")
-
-
-```
 
 # Session Info
 ```{r session info}

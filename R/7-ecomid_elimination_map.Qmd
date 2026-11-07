@@ -1,7 +1,7 @@
 ---
 title: "EcoMID serology"
-subtitle: "Create a map of population density"
-author: "Ben Arnold ben.arnold@ucsf.edu"
+subtitle: "Create an overview map of the study region"
+author: "Nikolina Walas (nikolina.walas@ucsf.edu)"
 date: "updated: `r Sys.time()`"
 date-updated: "Sep-18-2026"
 format:

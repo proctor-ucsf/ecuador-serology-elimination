@@ -41,7 +41,7 @@ source(here("R","0-config.R"))
 #
 # data are in long format
 #-------------------------------
-d <- read_rds(here("../../data/serology/final/ecomid_serology_datasets","ecomid_sero_antigen_seropos_long_v02_20261007.rds"))
+d <- read_rds(here("~/Library/CloudStorage/Box-Box/EcoMID/data/serology/final/ecomid_serology_datasets","ecomid_sero_antigen_seropos_long_v02_20261007.rds"))
 
 # drop monitoring targets
 d1 <- d %>%
@@ -53,7 +53,7 @@ d1 <- d %>%
 # load child visit data for
 # exact dates at age of DBS collection
 #-------------------------------
-dvisit <- read_rds(file=here("../../data/ecomid-field/final","ecomid_child_visit_info_2026-06-15.rds"))
+dvisit <- read_rds(file=here("~/Library/CloudStorage/Box-Box/EcoMID/data/ecomid-field/final","ecomid_child_visit_info_2026-06-15.rds"))
 
 #-------------------------------
 # join visit ages to serology
