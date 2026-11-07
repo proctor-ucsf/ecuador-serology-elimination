@@ -1,11 +1,12 @@
 ---
 title: "EcoMID serology"
-subtitle: "Pgp3 seroprevalence at 6m and cumulative incidence"
+subtitle: "Seroprevalence at 6m, all three elimination targets (revised Supplementary Table 2)"
 author: "Ben Arnold ben.arnold@ucsf.edu"
 date: "updated: `r Sys.time()`"
+date-modified: "Nov-4-2026"
 format:
   html:
-    
+
     toc: true
     embed-resources: true
     code-fold: true
@@ -14,9 +15,11 @@ format:
 
 # Summary
 
-This script summarizes IgG antibody responses to _Chlaymdia trachomatis_ Pgp3 and Ct684 antigens among children in the ECoMiD birth cohort. 
+Reviewers asked that Supplementary Table 2 report seroprevalence at age 6 months, by birth type
+and by community type, not only for trachoma (Pgp3) but also for onchocerciasis (Ov16) and yaws
+(rp17 and TmpA; a child is yaws-positive only if positive to *both* antigens, matching the
+composite definition used elsewhere in the manuscript, e.g. `3-ecomid_elimination_prev_ests_4.Qmd`).
 
-We then estimate the seroconversion rate (SCR) to Pgp3 for comparison with other global populations along the path toward elimination.  We estimate the SCR using two approaches: a catalytic model based on age-seroprevalence, and non-parametrically using longitudinal seroconversion among children at risk.
 
 # Preamble
 
@@ -27,9 +30,6 @@ here()
 # source the config file
 #----------------------------
 source(here("R","0-config.R"))
-
-# unload the raster package to avoid conflicts with dplyr::select
-detach("package:raster", unload = TRUE)
 
 ```
 
@@ -45,7 +45,7 @@ detach("package:raster", unload = TRUE)
 #
 # data are in long format
 #-------------------------------
-d <- read_rds(here("../../data/serology/final/ecomid_serology_datasets","ecomid_sero_antigen_seropos_long_2025-12-18.rds"))
+d <- read_rds(here("../../data/serology/final/ecomid_serology_datasets","ecomid_sero_antigen_seropos_long_v02_20261007.rds"))
 
 # drop monitoring targets
 d1 <- d %>%
@@ -59,7 +59,7 @@ d1 <- d %>%
 # load child visit data for
 # exact dates at age of DBS collection
 #-------------------------------
-dvisit <- read_rds(file=here("../../data/ecomid-field/final","ecomid_child_visit_info_2025-09-10.rds"))
+dvisit <- read_rds(file=here("../../data/ecomid-field/final","ecomid_child_visit_info_2026-06-15.rds"))
 
 #-------------------------------
 # load household characteristics
@@ -86,85 +86,41 @@ d2 <- d1 %>%
   ),
     # there are 2 children with visits that don't appear in the childvisit data
     # for them, it is both at 12 months, so assume age is DOB + 365 days
-    agedays = ifelse(is.na(age_days), difftime(time1=dob, time2=dob + 365, units="days"), age_days), 
+    agedays = ifelse(is.na(age_days), difftime(time1=dob, time2=dob + 365, units="days"), age_days),
   age_months = age_days/30.4,
-  age_years = age_days/365.25
-           
-           )
+  age_years = age_days/365.25 )
 ```
 
+# Seroprevalence at 6m, all three elimination targets
 
-
-# Seroprevalence by age
-
-```{r load Pgp3 antibody data}
-
-# filter to Pgp3 responses
-d3 <- d2 %>%
-  filter(antigen=="pgp3") 
-
-```
-
-
-Seroprevalence by age
-
-```{r seroprev by age}
+```{r process multi-pathogen 6m data}
 #-------------------------------
-# estimate seroprevalence 
-# by age and community type
+# filter to the four antigens used
+# to define the three elimination-
+# target pathogens (trachoma, oncho,
+# yaws), and pivot wide so we can
+# define the yaws composite
+# (rp17 AND tmpa both positive)
 #-------------------------------
-dprev_age <- d3 %>%
-  mutate(community_type2 = case_when(
-    community_type %in% c("Rural Road","Rural River") ~ "Rural",
-    TRUE ~ as.character(community_type)
-    ),
-    community_type2 = factor(community_type2,levels=c("Esmeraldas","Borbon","Rural"))
-    )%>%
-  group_by(community_type2,timepoint) %>%
-  summarize(
-    nobs = sum(!is.na(seropos)),
-    npos = sum(seropos, na.rm=TRUE)
-  ) %>%
-  rowwise() %>%
+d_multi <- d2 %>%
+  filter(antigen %in% c("pgp3","ov16","rp17","tmpa")) %>%
+  select(community_type, vagbirth, childid, timepoint, sampleid, antigen, seropos) %>%
+  pivot_wider(id_cols = c(community_type, vagbirth, childid, timepoint, sampleid),
+              names_from = antigen, values_from = seropos) %>%
   mutate(
-    seroprev = (npos/nobs)*100,
-    seroprev_min95 = binom.test(x=npos,n=nobs)$conf.int[1]*100,
-    seroprev_max95 = binom.test(x=npos,n=nobs)$conf.int[2]*100
-  )
+    trachoma = pgp3,
+    oncho = ov16,
+    yaws = ifelse(rp17 == 1 & tmpa == 1, 1, 0)
+  ) %>%
+  select(community_type, vagbirth, childid, timepoint, sampleid, trachoma, oncho, yaws) %>%
+  pivot_longer(cols = c(trachoma, oncho, yaws), names_to = "pathogen", values_to = "seropos")
 
-kbl(dprev_age, digits=1)
-
-pcols <- RColorBrewer::brewer.pal(8,"Dark2")[3:1]
-plot_pgp3_by_age <- ggplot(data = dprev_age, 
-                           aes(x = timepoint, 
-                               y=seroprev,
-                               color=community_type2,
-                               fill=community_type2)
-                           ) +
-  facet_grid(.~community_type2) +
-  geom_point() +
-  geom_ribbon(aes(ymin=seroprev_min95,ymax=seroprev_max95),alpha=0.2,color=NA) +
-  geom_line() +
-  scale_x_continuous(breaks = c(0,6,9,12,18,24)) +
-  scale_y_continuous(breaks = seq(0,20,by=5)) +
-  scale_color_manual(values = pcols) +
-  scale_fill_manual(values = pcols) +
-  coord_cartesian(xlim=c(6,24)) +
-  labs(x = "Age (months)", y = "Seroprevalence (%)", title = "Pgp3 seroprevalence by age, ECoMiD") +
-  theme_minimal() +
-  theme(
-    legend.position = "none",
-    panel.grid.minor.x = element_blank()
-  )
-
-plot_pgp3_by_age
-```
-
-```{r stratified incidence estimates}
 #-------------------------------
-# simplified community type
+# simplified community type, same
+# convention as the Pgp3-only
+# analysis in file 5
 #-------------------------------
-d4 <- d3 %>%
+d4_multi <- d_multi %>%
   mutate(community_code = substr(sampleid,1,1),
          community_type = case_when(
            community_code == "E" ~ "Esmeraldas",
@@ -174,86 +130,31 @@ d4 <- d3 %>%
   )
 
 #---------------------------------
-# Identify children at risk at
-# age 6 months
-# and indicators of ever seropositive
+# identify, per child per pathogen,
+# whether they were seropositive
+# at the age-6-month visit
 #---------------------------------
-dcum <- d4 %>%
-  group_by(childid) %>%
+dcum_multi <- d4_multi %>%
+  group_by(childid, pathogen) %>%
   mutate(pos6m = ifelse(timepoint == 6 & seropos == 1, 1, 0),
-         pos6m = max(pos6m, na.rm = TRUE),
-         everpos = max(seropos, na.rm = TRUE),
-         nobs = n(),
-         lastobs = max(timepoint)
-) %>%
-  select(community_type, vagbirth, childid, pos6m, everpos, nobs, lastobs) %>%
-  slice(1)
-
-
+         pos6m = max(pos6m, na.rm = TRUE)
+  ) %>%
+  select(community_type, vagbirth, childid, pathogen, pos6m) %>%
+  slice(1) %>%
+  ungroup()
 ```
 
-# Ever Pgp3 positive
-
-Estimate the proportion of children who were ever Pgp3 positive, by community type. 
-```{r}
-#| label: ever positive to Pgp3
-#| 
-#---------------------------------
-# Estimate the proportion of children
-# who were ever positive to Pgp3
-#
-# overall and by community type
-#---------------------------------
-est_everpos_overall <- dcum %>%
-  ungroup() %>%
-  summarize(nchild = sum(!is.na(everpos)),
-            npos = sum(everpos, na.rm=TRUE)) %>%
-  rowwise() %>%
-  mutate(pgp3pos = npos/nchild*100,
-         pgp3pos_min95 = binom.test(x=npos,n=nchild)$conf.int[1]*100,
-         pgp3pos_max95 = binom.test(x=npos,n=nchild)$conf.int[2]*100
-        ) %>%
-  mutate(table_label = "Overall")
-
-est_everpos_comm <- dcum %>%
-  group_by(community_type) %>%
-  summarize(nchild = sum(!is.na(everpos)),
-            npos = sum(everpos, na.rm=TRUE)) %>%
-  rowwise() %>%
-  mutate(pgp3pos = npos/nchild*100,
-         pgp3pos_min95 = binom.test(x=npos,n=nchild)$conf.int[1]*100,
-         pgp3pos_max95 = binom.test(x=npos,n=nchild)$conf.int[2]*100
-        ) %>%
-  rename(table_label = community_type)
-
-est_everpos <- bind_rows(est_everpos_overall, est_everpos_comm) %>%
-  select(table_label, everything())
-
-kbl(est_everpos, digits = 1, caption = "Proportion of children who were ever seropositive to Pgp3 between ages 6 and 24 months overall and by community type") %>%
-  kableExtra::group_rows(group_label = "Overall",start_row=1,end_row=1) %>%
-  kableExtra::group_rows(group_label = "Community type",start_row=2,end_row=4) %>%
-  kableExtra::kable_styling(bootstrap_options = "striped")
-
-```
-
-
-# Seroprevalence at 6m
-
-Estimate Pgp3 seroprevalence at 6m, stratified by community type
-
-```{r}
-#| label: estimate  Pgp3 seroprevalence at 6m
-
+```{r estimate multi-pathogen 6m seroprevalence}
 #---------------------------------
 # estimate % positive at 6 months
-# overall
-# by community type
-# by birth delivery type
+# for each pathogen: overall, by
+# birth delivery type, and by
+# community type
 #---------------------------------
-est_pos6m_overall <- dcum %>%
-  ungroup() %>%
+est_pos6m_overall_multi <- dcum_multi %>%
+  group_by(pathogen) %>%
   summarize(nchild = sum(!is.na(pos6m)),
-            npos = sum(pos6m, na.rm=TRUE)) %>%
+            npos = sum(pos6m, na.rm=TRUE), .groups = "drop") %>%
   rowwise() %>%
   mutate(prev6m = npos/nchild*100,
          prev6m_min95 = binom.test(x=npos,n=nchild)$conf.int[1]*100,
@@ -261,10 +162,10 @@ est_pos6m_overall <- dcum %>%
         ) %>%
   mutate(table_label = "Overall")
 
-est_pos6m_comm <- dcum %>%
-  group_by(community_type) %>%
+est_pos6m_comm_multi <- dcum_multi %>%
+  group_by(pathogen, community_type) %>%
   summarize(nchild = sum(!is.na(pos6m)),
-            npos = sum(pos6m, na.rm=TRUE)) %>%
+            npos = sum(pos6m, na.rm=TRUE), .groups = "drop") %>%
   rowwise() %>%
   mutate(prev6m = npos/nchild*100,
          prev6m_min95 = binom.test(x=npos,n=nchild)$conf.int[1]*100,
@@ -272,10 +173,10 @@ est_pos6m_comm <- dcum %>%
         ) %>%
   rename(table_label = community_type)
 
-est_pos6m_birth <- dcum %>%
-  group_by(vagbirth) %>%
+est_pos6m_birth_multi <- dcum_multi %>%
+  group_by(pathogen, vagbirth) %>%
   summarize(nchild = sum(!is.na(pos6m)),
-            npos = sum(pos6m, na.rm=TRUE)) %>%
+            npos = sum(pos6m, na.rm=TRUE), .groups = "drop") %>%
   rowwise() %>%
   mutate(prev6m = npos/nchild*100,
          prev6m_min95 = binom.test(x=npos,n=nchild)$conf.int[1]*100,
@@ -283,69 +184,115 @@ est_pos6m_birth <- dcum %>%
         ) %>%
   mutate(table_label = ifelse(vagbirth == 1, "Vaginal birth","Cesarean section"))
 
-est_pos6m <- bind_rows(est_pos6m_overall, est_pos6m_birth,est_pos6m_comm) %>%
+est_pos6m_multi <- bind_rows(est_pos6m_overall_multi, est_pos6m_birth_multi, est_pos6m_comm_multi) %>%
   select(-vagbirth) %>%
-  select(table_label, everything())
+  mutate(
+    pathogen = factor(pathogen, levels = c("trachoma","oncho","yaws"),
+                       labels = c("Trachoma, C. trachomatis (Pgp3)",
+                                  "Onchocerciasis, O. volvulus (Ov16)",
+                                  "Yaws, T. pallidum (rp17, TmpA)")),
+    table_label = factor(table_label, levels = c("Overall","Vaginal birth","Cesarean section",
+                                                  "Esmeraldas","Borbon","Rural villages")),
+    prev6m_print = paste0(sprintf("%1.1f",prev6m)," (",sprintf("%1.1f",prev6m_min95)," to ",sprintf("%1.1f",prev6m_max95),")")
+  ) %>%
+  arrange(pathogen, table_label) %>%
+  select(pathogen, table_label, everything())
 
-kbl(est_pos6m, digits = 1, caption = "Pgp3 seroprevalence at age 6 months overall, by type of birth delivery, and by community type") %>%
-  kableExtra::group_rows(group_label = "Overall",start_row=1,end_row=1) %>%
-    kableExtra::group_rows(group_label = "Birth type",start_row=2,end_row=3) %>%
-  kableExtra::group_rows(group_label = "Community type",start_row=4,end_row=6) %>%
+kbl(est_pos6m_multi %>% select(pathogen, table_label, nchild, npos, prev6m_print), digits = 1,
+    col.names = c("Pathogen","Population","N children","N positive","Seroprevalence at 6m (95% CI)"),
+    caption = "Seroprevalence at age 6 months to Pgp3 (trachoma), Ov16 (onchocerciasis), and rp17/TmpA (yaws), overall, by type of birth delivery, and by community type -- long format") %>%
+  kableExtra::collapse_rows(columns = 1, valign = "top") %>%
   kableExtra::kable_styling(bootstrap_options = "striped")
+
+write_csv(est_pos6m_multi, file = here("output","ecomid_si_table2_seroprev_6m_by_pathogen.csv"))
 ```
 
-# Cumulative incidence 6-24m
-```{r}
-#| label: cumulative incidence estimates
-#| 
-#---------------------------------
-# Among those at risk, determine
-# if they had an incident seroconversion
-# by age 24 months
-#
-# overall and by community type
-# 
-# note, these estimates are approximate
-# because only about 80% of children
-# completed 24 months of follow-up
-#---------------------------------
-est_cuminc_overall <- dcum %>%
-  filter(pos6m == 0) %>%
+## Reshape to wide format for Supplementary Table 2
+
+This assumes the "N children" denominator is (for practical purposes) identical across the three
+pathogens within each stratum. That's not guaranteed -- yaws requires *both* rp17 and TmpA
+non-missing, while trachoma/oncho each require only one antigen non-missing, and the main Table 2
+already shows slightly different N Tested by pathogen overall (1,601 vs. 1,605). So before
+collapsing to a single column, check for any mismatch and surface it rather than silently picking
+one pathogen's denominator.
+
+```{r check nchild consistency across pathogens}
+#-------------------------------
+# pivot N children wide by pathogen
+# to check whether the denominator
+# is really the same across all three
+# pathogens for every stratum
+#-------------------------------
+nchild_check <- est_pos6m_multi %>%
+  select(table_label, pathogen, nchild) %>%
+  pivot_wider(id_cols = table_label, names_from = pathogen, values_from = nchild)
+
+nchild_check
+
+nchild_mismatch <- nchild_check %>%
+  rowwise() %>%
+  mutate(mismatch = length(unique(c_across(-table_label))) > 1) %>%
   ungroup() %>%
-  summarize(nchild = sum(!is.na(everpos)),
-            npos = sum(everpos, na.rm=TRUE)) %>%
-  rowwise() %>%
-  mutate(cuminc = npos/nchild*100,
-         cuminc_min95 = binom.test(x=npos,n=nchild)$conf.int[1]*100,
-         cuminc_max95 = binom.test(x=npos,n=nchild)$conf.int[2]*100
-        ) %>%
-  mutate(table_label = "Overall")
+  filter(mismatch)
 
-est_cuminc_comm <- dcum %>%
-  filter(pos6m == 0) %>%
-  group_by(community_type) %>%
-  summarize(nchild = sum(!is.na(everpos)),
-            npos = sum(everpos, na.rm=TRUE)) %>%
-  rowwise() %>%
-  mutate(cuminc = npos/nchild*100,
-         cuminc_min95 = binom.test(x=npos,n=nchild)$conf.int[1]*100,
-         cuminc_max95 = binom.test(x=npos,n=nchild)$conf.int[2]*100
-        ) %>%
-  rename(table_label = community_type)
+if (nrow(nchild_mismatch) > 0) {
+  warning("N children differs across pathogens for at least one stratum -- see nchild_mismatch. ",
+          "The wide table below will still show a single N children column (from trachoma) -- ",
+          "double check whether that's appropriate before using it in the SI.")
+  print(nchild_mismatch)
+} else {
+  message("N children matches across all three pathogens for every stratum -- safe to show a single N children column.")
+}
+```
 
-est_cuminc <- bind_rows(est_cuminc_overall, est_cuminc_comm) %>%
-  select(table_label, everything())
+```{r reshape wide for supplementary table 2}
+#-------------------------------
+# short pathogen key for pivoting
+# column names cleanly, then pivot
+# N positive and seroprevalence
+# wide by pathogen; keep a single
+# N children column (from trachoma,
+# per the consistency check above)
+#-------------------------------
+tbl_si2_wide <- est_pos6m_multi %>%
+  mutate(pathogen_key = case_when(
+    grepl("^Trachoma", pathogen) ~ "trachoma",
+    grepl("^Onchocerciasis", pathogen) ~ "oncho",
+    grepl("^Yaws", pathogen) ~ "yaws"
+  )) %>%
+  select(table_label, pathogen_key, nchild, npos, prev6m_print) %>%
+  pivot_wider(
+    id_cols = table_label,
+    names_from = pathogen_key,
+    values_from = c(nchild, npos, prev6m_print)
+  ) %>%
+  transmute(
+    table_label,
+    nchild = nchild_trachoma,
+    npos_trachoma, prev6m_print_trachoma,
+    npos_oncho, prev6m_print_oncho,
+    npos_yaws, prev6m_print_yaws
+  ) %>%
+  arrange(table_label)
 
-kbl(est_cuminc, digits = 1, caption = "Cumulative incidence of seroconversion to Pgp3 between ages 6 and 24 months overall and by community type") %>%
-  kableExtra::group_rows(group_label = "Overall",start_row=1,end_row=1) %>%
-  kableExtra::group_rows(group_label = "Community type",start_row=2,end_row=4) %>%
+kbl(tbl_si2_wide, digits = 1,
+    col.names = c("Population","N children",
+                  "N positive","Seroprevalence (95% CI)",
+                  "N positive","Seroprevalence (95% CI)",
+                  "N positive","Seroprevalence (95% CI)"),
+    caption = "Revised Supplementary Table 2. Seroprevalence at age 6 months to Pgp3 (trachoma), Ov16 (onchocerciasis), and rp17/TmpA (yaws), overall, by type of birth delivery, and by community type") %>%
+  kableExtra::add_header_above(c(" " = 2, "Trachoma, C. trachomatis (Pgp3)" = 2,
+                                  "Onchocerciasis, O. volvulus (Ov16)" = 2,
+                                  "Yaws, T. pallidum (rp17, TmpA)" = 2)) %>%
+  kableExtra::group_rows(group_label = "Overall", start_row = 1, end_row = 1) %>%
+  kableExtra::group_rows(group_label = "Birth type", start_row = 2, end_row = 3) %>%
+  kableExtra::group_rows(group_label = "Community type", start_row = 4, end_row = 6) %>%
   kableExtra::kable_styling(bootstrap_options = "striped")
 
+write_csv(tbl_si2_wide, file = here("output","ecomid_si_table2_seroprev_6m_by_pathogen_wide.csv"))
 ```
 
 # Session Info
 ```{r session info}
 sessionInfo()
 ```
-
-

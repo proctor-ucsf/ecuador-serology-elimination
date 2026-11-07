@@ -3,6 +3,7 @@ title: "EcoMID serology"
 subtitle: "Create a map of population density"
 author: "Ben Arnold ben.arnold@ucsf.edu"
 date: "updated: `r Sys.time()`"
+date-updated: "Sep-18-2026"
 format:
   html:
     
@@ -68,16 +69,25 @@ dgps <- read_csv(here("../../data/geospatial","ECoMiD_communities_GPS.csv")) %>%
 dgps_sf <- dgps %>%
   st_as_sf(coords = c("lon", "lat"), crs = 4326) %>% 
   mutate(com = case_when(Name == "Esmeraldas" ~ "Esmeraldas", 
-                         Name == "Borbon" ~ "Borbon", 
+                         Name == "Borbon" ~ "Borbón", 
                          Name == "Colon Eloy" | Name == "Maldonado" | 
                            Name == "Selva Alegre" | Name == "Timbire" ~ "Rural Road", 
                          TRUE ~ "Rural River"))
 ```
 
 ```{r}
-#| label: load river polygon
+#| label: load-rivers
+#| cache: true
+
 # all rivers
-d_riv <- st_read(here("data/geodata","hotosm_ecu_waterways_lines_shp"))
+# reuse (or slightly pad) the bbox you already use for the roads query
+esmeraldas_bbox <- st_bbox(c(xmin = -80.2, ymin = 0.4, xmax = -78.5, ymax = 1.6),
+                            crs = st_crs(4326))
+esmeraldas_wkt <- st_as_text(st_as_sfc(esmeraldas_bbox))
+
+d_riv <- st_read(here("data/geodata","hotosm_ecu_waterways_lines_shp"),
+  wkt_filter = esmeraldas_wkt)
+
 d_riv_sf <- d_riv %>%
   st_as_sf(coords = c("lon", "lat"), crs = 4326)
 
@@ -129,7 +139,7 @@ pal <- colorFactor(
 
 # Leaflet map with polygon
 m <- leaflet(options = leafletOptions(zoomControl = FALSE, fadeAnimation = FALSE)) %>%
-  addProviderTiles(providers$Esri.WorldTerrain) %>% 
+  addProviderTiles(providers$OpenStreetMap.Mapnik) %>% 
   setView(lng = -79.1, lat = 0.8, zoom = 9.0)  %>%
   # Rivers Line
   addPolylines(
@@ -165,7 +175,7 @@ m <- leaflet(options = leafletOptions(zoomControl = FALSE, fadeAnimation = FALSE
   addLegend(
     position = "topleft",
     colors = c("navy", "#CC79A7", "#009E73", "#D55E00", NA, "#74ADD1", "#C4A484"), 
-    labels = c("Esmeraldas city", "Borbón", "Rural, road accessible", "Rural, river accessible", "", "Major Rivers", "Major Roads"), 
+    labels = c("Esmeraldas", "Borbón", "Rural, road accessible", "Rural, river accessible", "", "Major Rivers", "Major Roads"), 
     opacity = 1
     
   ) %>% addScaleBar(
@@ -183,7 +193,7 @@ m
 ```
 
 
-# MAP3: South America
+# MAP2: South America
 ```{r}
 #| label: create map of South America 
 
@@ -299,7 +309,7 @@ test
 comp_map <- plot_grid(map_overview, test, labels = c("A", "B"))
 comp_map
 
-ggsave(filename = here("output","ecomid-map-basemap.png"), comp_map, device = "png", width = 230, height = 140, units = "mm")
+ggsave(filename = here("output","figure1_ecomid-map-basemap.tiff"), comp_map, device = "tiff", width = 230, height = 140, units = "mm")
 ```
 
 

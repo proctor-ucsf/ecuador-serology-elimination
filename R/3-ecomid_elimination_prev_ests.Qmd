@@ -3,6 +3,7 @@ title: "EcoMID serology"
 subtitle: "Summarize seroprevalence for elimination targets overall and by community type"
 author: "Ben Arnold ben.arnold@ucsf.edu"
 date: "updated: `r Sys.time()`"
+date-modified: "Nov-4-2026"
 format:
   html:
     
@@ -38,7 +39,7 @@ source(here("R","0-config.R"))
 #
 # data are in long format
 #-------------------------------
-d <- read_rds(here("~/Library/CloudStorage/Box-Box/EcoMid/data/serology/final/ecomid_serology_datasets","ecomid_sero_antigen_seropos_long_2025-12-18.rds"))
+d <- read_rds(here("~/Library/CloudStorage/Box-Box/EcoMid/data/serology/final/ecomid_serology_datasets","ecomid_sero_antigen_seropos_long_v02_20261007.rds"))
 ```
 
 ```{r process antibody data}
@@ -63,6 +64,11 @@ d1 <- d %>%
 d2 <- d1 %>%
   select(community_type,childid,timepoint,oncho,trachoma,yaws) %>%
   pivot_longer(cols=c(oncho,trachoma,yaws), names_to = "pathogen", values_to = "seropos")
+
+# safety check 
+d2 %>% distinct(childid, community_type) %>%
+  count(community_type) %>%
+  arrange(community_type)
 ```
 
 # Estimate seroprevalence
@@ -111,6 +117,168 @@ dprev_pgp3_community <- d2 %>%
   
 kbl(dprev_pgp3_community, digits=1)
 ```
+
+# Estimate child-level seroprevalence for Table 2
+
+The table above counts each measurement (a child can contribute up to 6 visits) as a separate observation. Here we instead count each child once per pathogen: a child is "ever positive" if they were seropositive at *any* visit during follow-up. N children is the number of children with at least one non-missing result for that pathogen; N ever seropositive is how many of those were positive at
+least once.
+
+```{r child level pathogen prevalence}
+#-------------------------------
+# child-level: N children, N
+# ever seropositive per pathogen
+# at any visit, crude prevalence
+# with binomial exact 95% CI
+#-------------------------------
+d2_child <- d2 %>%
+  filter(!is.na(seropos)) %>%
+  group_by(childid, pathogen) %>%
+  summarize(ever_pos = max(seropos), .groups = "drop")
+
+dprev_child <- d2_child %>%
+  group_by(pathogen) %>%
+  summarize(
+    n_children = n(),
+    n_ever_pos = sum(ever_pos),
+    .groups = "drop"
+  ) %>%
+  rowwise() %>%
+  mutate(
+    child_seroprev = (n_ever_pos/n_children)*100,
+    child_seroprev_min95 = binom.test(x=n_ever_pos, n=n_children)$conf.int[1]*100,
+    child_seroprev_max95 = binom.test(x=n_ever_pos, n=n_children)$conf.int[2]*100
+  ) %>%
+  ungroup() %>%
+  mutate(child_seroprev_print = paste0(sprintf("%1.1f",child_seroprev)," (",sprintf("%1.1f",child_seroprev_min95)," to ",sprintf("%1.1f",child_seroprev_max95),")"))
+
+kbl(dprev_child %>% select(pathogen, n_children, n_ever_pos, child_seroprev_print), digits=1,
+    col.names = c("Pathogen","N children","N ever seropositive","Child-level seroprevalence (95% CI)"))
+```
+
+## Table 2, sample-level and child-level stacked vertically
+
+As with Table 3 below, stack sample-level and child-level estimates into one long table sharing common
+column names ("N tested" = N measurements for sample-level, N children for child-level; "N positive";
+"Seroprevalence (95% CI)"), grouped by level with `kableExtra::pack_rows()`.
+
+```{r combine table2 sample and child level long}
+#-------------------------------
+# format sample-level estimates
+# for printing, then reshape
+# sample-level and child-level
+# estimates into a single long
+# table sharing common column
+# names, so they stack vertically
+# instead of side by side
+#-------------------------------
+dprev_print <- dprev %>%
+  mutate(seroprev_print = paste0(sprintf("%1.1f",seroprev)," (",sprintf("%1.1f",seroprev_min95)," to ",sprintf("%1.1f",seroprev_max95),")"))
+
+dprev_long <- bind_rows(
+  dprev_print %>%
+    transmute(pathogen, level = "Sample-level", n_tested = nobs, n_pos = npos, prev_print = seroprev_print),
+  dprev_child %>%
+    transmute(pathogen, level = "Child-level", n_tested = n_children, n_pos = n_ever_pos, prev_print = child_seroprev_print)
+) %>%
+  mutate(
+    level = factor(level, levels = c("Sample-level","Child-level")),
+    pathogen = factor(pathogen, levels = c("trachoma","oncho","yaws"),
+                       labels = c("Trachoma, C. trachomatis (Pgp3)",
+                                  "Onchocerciasis, O. volvulus (Ov16)",
+                                  "Yaws, T. pallidum (rp17, TmpA)"))
+  ) %>%
+  arrange(level, pathogen)
+
+tbl2_long <- dprev_long %>%
+  select(pathogen, n_tested, n_pos, prev_print)
+
+kbl(tbl2_long, digits=3,
+    col.names = c("Disease, pathogen (antigens)","N tested","N positive","Seroprevalence (95% CI)"),
+    caption = "Table 2. Seroprevalence to three pathogens assessed for elimination -- sample-level and child-level (ever positive at any visit)") %>%
+  pack_rows("Sample-level (per measurement)", 1, sum(dprev_long$level=="Sample-level")) %>%
+  pack_rows("Child-level (ever positive at any visit)", sum(dprev_long$level=="Sample-level")+1, nrow(dprev_long))
+
+write_csv(dprev_long, file = here("output","ecomid_table2_seroprev_sample_and_child_level.csv"))
+```
+
+## Supp table, community-level prevalence 
+
+At the child-level, summarise  "Seroprevalence (95% CI)") for onchocerciasis and yws 
+
+```{r}
+#-------------------------------
+# format sample-level estimates
+# for printing, then reshape
+# sample-level and child-level
+# estimates into a single long
+# table sharing common column
+# names, so they stack vertically
+# instead of side by side
+#-------------------------------
+d_comm <- d %>%
+  filter( antigen %in% c("ov16","rp17","tmpa","pgp3")) %>%
+  select(community_name,childid,timepoint,antigen, seropos) %>%
+  pivot_wider(id_cols=c(community_name,childid,timepoint),names_from = "antigen", values_from = "seropos") %>%
+  mutate(oncho=ov16,
+         trachoma = pgp3,
+         yaws = ifelse(rp17 == 1 & tmpa==1, 1, 0)         
+         ) 
+
+d3 <- d_comm %>%
+  select(community_name,childid,timepoint,oncho,trachoma,yaws) %>%
+  pivot_longer(cols=c(oncho,trachoma,yaws), names_to = "pathogen", values_to = "seropos")
+
+community_prevalence <- d3 %>%
+  filter(!is.na(seropos)) %>%
+  group_by(childid, pathogen, community_name) %>%
+  summarize(ever_pos = max(seropos), .groups = "drop")
+
+dprev_comm <- community_prevalence %>%
+  group_by(pathogen, community_name) %>%
+  summarize(
+    n_comm = n(),
+    n_ever_pos = sum(ever_pos),
+    .groups = "drop"
+  ) %>%
+  rowwise() %>%
+  mutate(
+    comm_seroprev = (n_ever_pos/n_comm)*100,
+    comm_seroprev_min95 = binom.test(x=n_ever_pos, n=n_comm)$conf.int[1]*100,
+    comm_seroprev_max95 = binom.test(x=n_ever_pos, n=n_comm)$conf.int[2]*100
+  ) %>%
+  ungroup() %>%
+  mutate(comm_seroprev_print = paste0(sprintf("%1.1f",comm_seroprev)," (",sprintf("%1.1f",comm_seroprev_min95)," to ",sprintf("%1.1f",comm_seroprev_max95),")"))
+
+
+# Format table
+kbl(dprev_comm  %>% select(community_name, pathogen, n_comm, n_ever_pos, comm_seroprev_print), digits=1,
+    col.names = c("Community", "Pathogen","N children","N ever seropositive","Community-level seroprevalence (95% CI)"))
+
+dprev_comm_export <- dprev_comm  %>%
+  mutate(community_type = case_when(community_name == "Borbon" ~ "Borbón", 
+                                    community_name == "Esmeraldas" ~ "Esmeraldas",
+                                    community_name == "Maldonado" ~ "Rural road",
+                                    community_name == "Timbire" ~ "Rural road",
+                                    community_name == "Selva Alegre" ~ "Rural road",
+                                    community_name == "Colon Eloy" ~ "Rural road",
+                                    community_name == "Zancudo" ~ "Rural river",
+                                    community_name == "Santo Domingo" ~ "Rural river",
+                                    community_name == "Colon de Onzole" ~ "Rural river",
+                                    community_name == "San Francisco" ~ "Rural river",
+                                    )) %>%
+  select(pathogen, community_type, community_name, n_comm, n_ever_pos, comm_seroprev_print) 
+dprev_comm_export$community_type <- factor(dprev_comm_export$community_type, 
+                            levels = c("Esmeraldas", "Borbón", 
+                                       "Rural road", "Rural river"))
+
+dprev_comm_export <- dprev_comm_export %>% arrange(pathogen, community_type, community_name)
+
+
+
+
+write_csv(dprev_comm_export, file = here("output","ecomid_supptable_seroprev_community_level.csv"))
+```
+
 
 # Estimate Pgp3 diff by community type
 
@@ -168,6 +336,136 @@ dprev_pgp3_community2 <- dprev_pgp3_community %>%
 
 kbl(dprev_pgp3_community2 %>% select(community_type,nobs,npos,seroprev_print,diff_print,diff_p), digits=3, col.names = c("Community type","N measurements","N pos","Seroprevalence (95% CI)","Difference (95% CI)","P-value"))
 
+```
+
+# Estimate Pgp3 child-level prevalence
+
+The table above counts each measurement (a child can contribute up to 6 visits) as a separate
+observation. Here we instead count each child once: a child is "ever positive" if they were
+seropositive to Pgp3 at *any* visit during follow-up. N children is the number of children with at
+least one non-missing Pgp3 result; N ever seropositive is how many of those were positive at least once.
+
+```{r child level pgp3 prevalence}
+#-------------------------------
+# child-level: N children, N
+# ever seropositive to Pgp3 at
+# any visit, crude prevalence
+# with binomial exact 95% CI
+#-------------------------------
+d3_child <- d3 %>%
+  filter(!is.na(seropos)) %>%
+  group_by(childid, community_type) %>%
+  summarize(ever_pos = max(seropos), .groups = "drop")
+
+dprev_pgp3_child <- d3_child %>%
+  group_by(community_type) %>%
+  summarize(
+    n_children = n(),
+    n_ever_pos = sum(ever_pos),
+    .groups = "drop"
+  ) %>%
+  rowwise() %>%
+  mutate(
+    child_seroprev = (n_ever_pos/n_children)*100,
+    child_seroprev_min95 = binom.test(x=n_ever_pos, n=n_children)$conf.int[1]*100,
+    child_seroprev_max95 = binom.test(x=n_ever_pos, n=n_children)$conf.int[2]*100
+  ) %>%
+  ungroup() %>%
+  mutate(child_seroprev_print = paste0(sprintf("%1.1f",child_seroprev)," (",sprintf("%1.1f",child_seroprev_min95)," to ",sprintf("%1.1f",child_seroprev_max95),")"))
+
+kbl(dprev_pgp3_child %>% select(community_type, n_children, n_ever_pos, child_seroprev_print), digits=1,
+    col.names = c("Community type","N children","N ever seropositive","Child-level seroprevalence (95% CI)"))
+```
+
+## Estimate child-level Pgp3 diff by community type
+
+Same model as the sample-level difference above (`glm(..., family=binomial(link="identity"))`), but
+fit to the child-level "ever positive" outcome. No clustering is needed here since each child
+contributes exactly one row already (unlike the sample-level model, which clusters on childid to
+account for up to 6 repeated measurements per child) -- we still call `vcovCL(..., cluster=childid)`
+for consistency with the code above, but with one row per child this is numerically identical to a
+plain heteroskedasticity-robust (HC) sandwich estimator.
+
+```{r child level pgp3 diff by community}
+child_fit <- glm(ever_pos ~ community_type, family=binomial(link="identity"), data=d3_child)
+child_fit_rb <- coeftest(child_fit, .vcov = vcovCL(child_fit, cluster = d3_child$childid))
+child_fit_ci <- confint(child_fit_rb)
+
+child_fit_rb
+child_fit_ci
+
+d_childdiffs <- data.frame(
+  community_type = c("Esmeraldas","Borbon","Rural Road","Rural River"),
+  child_diff    = c(NA,child_fit_rb[2:4,1])*100,
+  child_diff_p  = c(NA,child_fit_rb[2:4,4]),
+  child_diff_min95 = c(NA,child_fit_ci[2:4,1])*100,
+  child_diff_max95 = c(NA,child_fit_ci[2:4,2])*100
+)
+
+dprev_pgp3_child <- dprev_pgp3_child %>%
+  left_join(d_childdiffs, join_by(community_type)) %>%
+  mutate(
+    child_diff_print = paste0(sprintf("%1.1f",child_diff)," (",sprintf("%1.1f",child_diff_min95)," to ",sprintf("%1.1f",child_diff_max95),")"),
+    child_diff_print = ifelse(is.na(child_diff),NA,child_diff_print)
+  )
+
+kbl(dprev_pgp3_child %>% select(community_type, n_children, n_ever_pos, child_seroprev_print, child_diff_print, child_diff_p), digits=3,
+    col.names = c("Community type","N children","N ever seropositive","Child-level seroprevalence (95% CI)","Difference (95% CI)","P-value"))
+```
+
+## Table 3, sample-level and child-level stacked vertically
+
+Rather than sample-level and child-level side by side, stack them into one long table sharing common
+column names ("N tested" = N measurements for sample-level, N children for child-level; "N positive";
+"Prevalence (95% CI)"), grouped by level with `kableExtra::pack_rows()`. Difference/P-value now appear
+for both levels -- sample-level compares community types on a per-measurement basis (clustered SEs for
+repeated visits), child-level compares them on the "ever positive" outcome (one row per child, so no
+clustering needed, but the same robust-SE machinery is used).
+
+```{r combine table3 sample and child level long}
+#-------------------------------
+# reshape sample-level and
+# child-level estimates into a
+# single long table sharing
+# common column names, so they
+# stack vertically instead of
+# side by side
+#-------------------------------
+dprev_pgp3_long <- bind_rows(
+  dprev_pgp3_community2 %>%
+    transmute(community_type, level = "Sample-level",
+              n_tested = nobs, n_pos = npos,
+              prev_print = seroprev_print,
+              diff_print = diff_print, diff_p = diff_p),
+  dprev_pgp3_child %>%
+    transmute(community_type, level = "Child-level",
+              n_tested = n_children, n_pos = n_ever_pos,
+              prev_print = child_seroprev_print,
+              diff_print = child_diff_print, diff_p = child_diff_p)
+) %>%
+  # community_type gets silently coerced to a plain character column earlier
+  # (the left_join against d_pgp3diffs above joins a factor against a character
+  # column of the same name, and the join result drops the factor). Re-impose
+  # the intended display order explicitly here rather than relying on
+  # whatever type/order survived upstream, otherwise arrange() below sorts
+  # community types alphabetically (Borbon, Esmeraldas, Rural River, Rural
+  # Road) instead of matching the rest of the manuscript's tables.
+  mutate(
+    level = factor(level, levels = c("Sample-level","Child-level")),
+    community_type = factor(community_type, levels = c("Esmeraldas","Borbon","Rural Road","Rural River"))
+  ) %>%
+  arrange(level, community_type)
+
+tbl3_long <- dprev_pgp3_long %>%
+  select(community_type, n_tested, n_pos, prev_print, diff_print, diff_p)
+
+kbl(tbl3_long, digits=3,
+    col.names = c("Community type","N tested","N positive","Prevalence (95% CI)","Difference (95% CI)","P-value"),
+    caption = "Table 3. C. trachomatis Pgp3 seroprevalence by community type -- sample-level and child-level (ever positive at any visit)") %>%
+  pack_rows("Sample-level (per measurement)", 1, sum(dprev_pgp3_long$level=="Sample-level")) %>%
+  pack_rows("Child-level (ever positive at any visit)", sum(dprev_pgp3_long$level=="Sample-level")+1, nrow(dprev_pgp3_long))
+
+write_csv(dprev_pgp3_long, file = here("output","ecomid_table3_pgp3_seroprev_sample_and_child_level.csv"))
 ```
 
 

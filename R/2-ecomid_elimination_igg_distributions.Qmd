@@ -3,6 +3,7 @@ title: "Integrated serosurveillance to assess disease elimination in coastal Ecu
 subtitle: "Summarize IgG distributions for each antigen"
 author: "Lesly Simbaña, Ben Arnold ben.arnold@ucsf.edu"
 date: "updated: `r Sys.time()`"
+date-modified: "Nov-04-26"
 format:
   html:
     
@@ -38,7 +39,8 @@ source(here("R","0-config.R"))
 #
 # data are in long format
 #-------------------------------
-d <- read_rds(here("~/Library/CloudStorage/Box-Box/EcoMid/data/serology/final/ecomid_serology_datasets","ecomid_sero_antigen_seropos_long_2025-12-18.rds"))
+d <- read_rds(here("~/Library/CloudStorage/Box-Box/EcoMid/data/serology/final/ecomid_serology_datasets",
+                   "ecomid_sero_antigen_seropos_long_v02_20261007.rds"))
 
 
 #-------------------------------
@@ -49,16 +51,15 @@ d <- read_rds(here("~/Library/CloudStorage/Box-Box/EcoMid/data/serology/final/ec
 d1 <- d %>%
   filter(antigen %in% c("pgp3","ct694","rp17","tmpa","ov16")) %>%
   mutate(antigen_plot = antigen_lab,
-         antigen_plot = factor(antigen_plot, levels=c("C. trachomatis Pgp3","C. trachomatis CT694","T. palladium rp17","T. palladium tmpa","O. volvulus Ov16")))
+         antigen_plot = factor(antigen_plot, levels=c("C. trachomatis Pgp3","C. trachomatis CT694",
+                                                      "T. pallidum rp17", "T. pallidum tmpa",
+                                                      "O. volvulus Ov16")))
 ```
 
 
 # Create histograms of IgG values
 
 ```{r distributions of igg}
-
-
-
 # custom log labels
 log10labs <- c( 
   expression(10^0),
@@ -86,10 +87,9 @@ plot_igg_dists <- ggplot(data=d1, aes(x=log10mfi)) +
   theme_classic()
   
 
-
 plot_igg_dists
 
-ggsave(filename = here("output","ecomid_igg_distributions.png"),plot_igg_dists, device = "png",height = 150,width=120, units = "mm")
+ggsave(filename = here("output","figure2_ecomid_igg_distributions.tiff"),plot_igg_dists, device = "tiff",height = 150,width=120, units = "mm")
 
 ```
 

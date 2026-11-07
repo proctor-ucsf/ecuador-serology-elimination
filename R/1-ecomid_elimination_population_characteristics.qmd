@@ -3,6 +3,7 @@ title: "Integrated serosurveillance to assess disease elimination in coastal Ecu
 subtitle: "Summarize study population characteristics"
 author: "Lesly Simbaña Vivanco (lsimbana@usfq.edu.ec) and Nikolina Walas (nikolina.walas@ucsf.edu)"
 date: "updated: `r Sys.time()`"
+date-modified: "Nov-04-2026"
 format:
   html:
     self-contained: true
@@ -26,16 +27,18 @@ The purpose of this file is to generate a table 1 of participant characteristics
 library(here)
 source(here("R", "0-config.R"))
 
-# unload the raster package to avoid conflicts with dplyr::select
-detach("package:raster", unload = TRUE)
 ```
 
 ## Read in files
 
 ```{r}
 # Dataset to pull demographic info from 
-d <- read_rds(here("../../data/serology/final/ecomid_serology_datasets","ecomid_sero_antigen_seropos_long_2025-12-18.rds"))
+d <- read_rds(here("../../data/serology/final/ecomid_serology_datasets","ecomid_sero_antigen_seropos_long_v02_20261007.rds"))
 d$house_ID <- str_sub(d$childid, -4)
+
+d %>% distinct(childid, community_name, community_type) %>%
+  count(community_name, community_type) %>%
+  arrange(community_name)
 
 # Participant information
 survey <- read.csv(here("../../Data/ecomid-field/final/surveydata_20251003.csv"))
@@ -44,16 +47,21 @@ survey$house_ID <- str_pad(survey$house_ID, width = 4, pad = "0")
 survey_consolidated <- survey %>% filter(survey$house_ID %in% d$house_ID) %>% left_join(d %>% select(house_ID, community_type, community_name)) %>% unique()
 
 # add in sub-community variable (rural and rural-river)
+# ERROR IN COMMUNITY CLASSIFICATION WAS CORRECTED AS OF 08/07/2026 (Zancudo was listed as both rural river and rural road)
 survey_consolidated <- survey_consolidated %>% mutate(ct = case_when(
   community_name == "Esmeraldas" ~ "Esmeraldas",
       community_name == "Borbon" ~ "Borbon",
-      community_name %in% c("Maldonado", "Colon Eloy", "Timbire", "Zancudo", "Selva Alegre") ~ "Rural Road",
+      community_name %in% c("Maldonado", "Colon Eloy", "Timbire", "Selva Alegre") ~ "Rural Road",
       community_name %in% c("Zancudo", "Colon de Onzole", "Santo Domingo", "San Francisco") ~ "Rural River"
 ))
 
 # assign levels
 survey_consolidated$ct <- factor(survey_consolidated$ct,
                     levels = c("Esmeraldas", "Borbon", "Rural Road", "Rural River"))
+
+survey_consolidated %>% distinct(house_ID, community_name, community_type) %>%
+  count(community_name, community_type) %>%
+  arrange(community_name)
 
 ```
 
@@ -128,5 +136,5 @@ table1 <- table1(~ factor(hhwealthquart) + factor(mom_ethnicity2) + factor(hhcro
                  | ct, data=survey_consolidated)
 table1
 
-table1 %>% write.csv(here("output/table1_updated_nw.csv"))
+table1 %>% write.csv(here("output/table1_20261104.csv"))
 ```

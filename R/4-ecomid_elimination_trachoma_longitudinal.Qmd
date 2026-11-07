@@ -3,6 +3,7 @@ title: "Integrated serosurveillance to assess disease elimination in coastal Ecu
 subtitle: "Trachoma antigen longitudinal analysis"
 author: "Ben Arnold ben.arnold@ucsf.edu"
 date: "updated: `r Sys.time()`"
+date-modified: "Nov-4-2026"
 format:
   html:
     
@@ -28,9 +29,6 @@ here()
 #----------------------------
 source(here("R","0-config.R"))
 
-# unload the raster package to avoid conflicts with dplyr::select
-detach("package:raster", unload = TRUE)
-
 ```
 
 # Load the clean MBA data
@@ -43,7 +41,7 @@ detach("package:raster", unload = TRUE)
 #
 # data are in long format
 #-------------------------------
-d <- read_rds(here("../../data/serology/final/ecomid_serology_datasets","ecomid_sero_antigen_seropos_long_2025-12-18.rds"))
+d <- read_rds(here("../../data/serology/final/ecomid_serology_datasets","ecomid_sero_antigen_seropos_long_v02_20261007.rds"))
 
 # drop monitoring targets
 d1 <- d %>%
@@ -55,7 +53,7 @@ d1 <- d %>%
 # load child visit data for
 # exact dates at age of DBS collection
 #-------------------------------
-dvisit <- read_rds(file=here("../../data/ecomid-field/final","ecomid_child_visit_info_2025-09-10.rds"))
+dvisit <- read_rds(file=here("../../data/ecomid-field/final","ecomid_child_visit_info_2026-06-15.rds"))
 
 #-------------------------------
 # join visit ages to serology
@@ -147,11 +145,13 @@ plot_mfi_long_pgp3_pos
 
 
 ggsave(filename = here("output","ecomid_mfi_pgp3_by_age_comm.png"),plot_mfi_long_pgp3_pos, device="png",width = 200, height = 180, units = "mm")
+
+# ggsave(filename = here("output","figureS2-ecomid_mfi_pgp3_by_age_comm.tiff"), plot_mfi_long_pgp3_pos, device = "tiff", width = 200, height = 180, units = "mm")
 ```
 
 ## Individual child trajectories
 
-Plot Pgp3 and Ct694 for the 30 children who were seropositive to both at some point during follow-up. 
+Plot Pgp3 and Ct694 for the 30 children who were seropositive to both at some point during follow-up. Add in panels for Oncho () and 
 
 Antibody responses to the two antigens are broadly consistent and seem to track longitudinally with high consistency in most cases. 
 
@@ -242,6 +242,8 @@ plot_pgp3ct694_mfi
 
 ggsave(filename = here("output","ecomid-longtrajectories-pgp3ct694pos.png"),plot=plot_pgp3ct694_mfi, device = "png", width=120, height=200, units="mm")
 
+# ggsave(filename = here("output","figureS3-ecomid-longtrajectories-pgp3ct694pos.tiff"), plot_pgp3ct694_mfi, device = "tiff", width = 120, height = 140, units = "mm")
+
 ```
 
 
@@ -284,6 +286,8 @@ plot_pgp3_mfi <- ggplot(dct3 %>% filter(childid %in% justpgp3),
 plot_pgp3_mfi
 
 ggsave(filename = here("output","ecomid-longtrajectories-pgp3pos.png"),plot=plot_pgp3_mfi, device = "png", width=120, height=160, units="mm")
+
+# ggsave(filename = here("output","figureS4-ecomid-longtrajectories-pgp3pos.tiff"), plot_pgp3_mfi, device = "tiff", width = 120, height = 160, units = "mm")
 
 ```
 
@@ -610,7 +614,7 @@ kbl(scr_tab_all %>% select(-ir,-ir_min95,-ir_max95), caption = "Summary of incid
 # include Overall as first row!
 #-------------------------------
 scr_res <- bind_rows(scr_tab, scr_tab_all)
-write_csv(scr_res, file = here("output","ecomid_long_scr_by_community_pgp3.csv"))
+write_csv(scr_res, file = here("output","table_s2_ecomid_long_scr_by_community_pgp3.csv"))
 ```
 
 # Estimate SRR longitudinal
@@ -726,12 +730,131 @@ srr_tab_12to24 <- data.frame(
 
 kbl(srr_tab_12to24 %>% select(-srr,-srr_min95,-srr_max95), caption = "Summary of incident seroreversions to Pgp3, 12-24m", col.names = c("","N children", "N seroreversions","Years at risk", "SRR (95% CI) per 100 person-years"))
 
+```
+
+## Stratified estimates by community type
+
+Estimate the SRR stratified by community type (Esmeraldas, Borbon, Rural villages), for both the 6-24m and 12-24m windows, using the same community assignment (derived from `sampleid`) used in the stratified SCR analysis above.
+
+Use the same bootstrap approach as the overall Pgp3 SRR estimates above: resample children with replacement (1,000 bootstrap samples) and take the 95% percentile CI. To avoid repeating the same block of code by hand for every community x window combination, wrap the procedure in a helper function (`boot_srr()`) that does exactly what the code above does -- it does not change the estimator or the CI method.
+
+```{r}
+#| label: estimate stratified SRR by community type
 
 #-------------------------------
-# save the results to a csv 
-# file for future use
+# helper function: bootstrap resample
+# children (with replacement) to estimate
+# the seroreversion rate and a percentile
+# 95% CI -- identical procedure to the
+# overall Pgp3 SRR estimates above, just
+# wrapped in a function so it can be
+# applied within each community_type stratum
 #-------------------------------
-srr_res <- bind_rows(srr_tab, srr_tab_12to24)
+boot_srr <- function(data, event_col, pt_col, seed, nboot = 1000) {
+  # observed estimated seroreversion rate
+  srr_estimate <- est_ir(new_episode = data[[event_col]], pt = data[[pt_col]])
+
+  # boostrap resample
+  idlist <- unique(data$childid)
+  set.seed(seed)
+  boot_samp <- matrix(sample(idlist, size = length(idlist)*nboot, replace = TRUE), nrow = length(idlist), ncol = nboot)
+  srr_boots <- foreach(i = 1:nboot, .combine = rbind) %do% {
+    di <- left_join(data.frame(childid = boot_samp[,i]), data, join_by(childid), relationship = "many-to-many")
+    est_ir(new_episode = di[[event_col]], pt = di[[pt_col]])
+  }
+
+  # for very sparse strata, a bootstrap resample can happen to exclude
+  # every child who was ever at risk of reversion, leaving zero person-time
+  # at risk for that replicate. That produces a 0/0 = NaN rate for the
+  # replicate (rather than a non-smooth-but-finite value), which crashes
+  # quantile() if left in. Exclude these degenerate replicates from the
+  # percentile CI (na.rm = TRUE) -- same 1,000-replicate bootstrap and same
+  # percentile-CI method as the overall Pgp3 SRR above, just skipping
+  # replicates that carry no information -- and report how many were
+  # dropped so it's visible if this is a small or large share of the 1,000.
+  n_nan <- sum(is.nan(srr_boots))
+  if (n_nan > 0) {
+    message(sprintf("boot_srr: %d of %d bootstrap replicates had zero person-time at risk (NaN) and were excluded from the CI.", n_nan, nboot))
+  }
+
+  # estimate the percentile 95% CI from the bootstrap distribution
+  srr_min95 <- quantile(srr_boots, prob = 0.025, na.rm = TRUE)
+  srr_max95 <- quantile(srr_boots, prob = 0.975, na.rm = TRUE)
+
+  data.frame(
+    nchild    = length(unique(data$childid)),
+    nseror    = sum(data[[event_col]], na.rm = TRUE),
+    ptarr     = sum(data[[pt_col]], na.rm = TRUE),
+    srr       = srr_estimate * 100,
+    srr_min95 = srr_min95 * 100,
+    srr_max95 = srr_max95 * 100
+  )
+}
+
+#-------------------------------
+# identify community type from
+# sampleid (mirrors the SCR
+# stratification above)
+#-------------------------------
+d4_strat <- d4 %>%
+  mutate(community_code = substr(sampleid, 1, 1),
+         community_type = case_when(
+           community_code == "E" ~ "Esmeraldas",
+           community_code == "B" ~ "Borbon",
+           TRUE ~ "Rural villages"),
+         community_type = factor(community_type, levels = c("Esmeraldas","Borbon","Rural villages"))
+  )
+
+d4_12to24m_strat <- d4_12to24m %>%
+  mutate(community_code = substr(sampleid, 1, 1),
+         community_type = case_when(
+           community_code == "E" ~ "Esmeraldas",
+           community_code == "B" ~ "Borbon",
+           TRUE ~ "Rural villages"),
+         community_type = factor(community_type, levels = c("Esmeraldas","Borbon","Rural villages"))
+  )
+
+#-------------------------------
+# stratified estimates, 6-24m
+# (fixed per-community seeds for
+# reproducibility)
+#-------------------------------
+srr_strat_6to24 <- d4_strat %>%
+  group_by(community_type) %>%
+  # note: cur_group_id() is not available inside group_modify()'s
+  # data mask, so derive a distinct seed per group from the group
+  # key (.y) itself instead, via the community_type factor level
+  group_modify(function(.x, .y) boot_srr(.x, "serorev", "ptr", seed = 19373 + as.integer(.y$community_type))) %>%
+  ungroup() %>%
+  rename(desc = community_type) %>%
+  mutate(
+    desc = paste0(as.character(desc), " (6-24m)"),
+    srr_print = paste0(sprintf("%1.1f", srr), " (", sprintf("%1.1f", srr_min95), " to ", sprintf("%1.1f", srr_max95), ")")
+  )
+
+kbl(srr_strat_6to24 %>% select(-srr,-srr_min95,-srr_max95), caption = "Stratified incident seroreversions to Pgp3 by community type, 6-24m (bootstrap 95% CI)", col.names = c("","N children", "N seroreversions","Years at risk", "SRR (95% CI) per 100 person-years"))
+
+#-------------------------------
+# stratified estimates, 12-24m
+#-------------------------------
+srr_strat_12to24 <- d4_12to24m_strat %>%
+  group_by(community_type) %>%
+  group_modify(function(.x, .y) boot_srr(.x, "serorev", "ptr", seed = 19400 + as.integer(.y$community_type))) %>%
+  ungroup() %>%
+  rename(desc = community_type) %>%
+  mutate(
+    desc = paste0(as.character(desc), " (12-24m)"),
+    srr_print = paste0(sprintf("%1.1f", srr), " (", sprintf("%1.1f", srr_min95), " to ", sprintf("%1.1f", srr_max95), ")")
+  )
+
+kbl(srr_strat_12to24 %>% select(-srr,-srr_min95,-srr_max95), caption = "Stratified incident seroreversions to Pgp3 by community type, 12-24m (bootstrap 95% CI)", col.names = c("","N children", "N seroreversions","Years at risk", "SRR (95% CI) per 100 person-years"))
+
+#-------------------------------
+# save all of the results (overall
+# + stratified, both windows) to a
+# csv file for future use
+#-------------------------------
+srr_res <- bind_rows(srr_tab, srr_strat_6to24, srr_tab_12to24, srr_strat_12to24)
 write_csv(srr_res, file = here("output","ecomid_long_srr_pgp3.csv"))
 ```
 
@@ -780,7 +903,16 @@ d6 <- d2 %>%
     # in cases of seroconversion, reduce person time by 1/2
     pt = ifelse(seroconv==1, pt*0.5,pt),
     # set persontime at risk to zero if the child is not at risk
-    pt = ifelse(atrisk == 0, 0, pt)
+    pt = ifelse(atrisk == 0, 0, pt),
+
+    # incident seroreversions and person-time at risk of reversion
+    # (mirrors the Pgp3-only calculation above, but applied to the
+    # joint Pgp3+Ct694 seropositivity indicator)
+    atriskr = ifelse(seropos == 1, 1, 0),
+    serorev = ifelse(atriskr == 1 & seropos == 1 & lead_seropos == 0, 1, 0),
+    ptr = lead_age_years - age_years,
+    ptr = ifelse(serorev == 1, ptr*0.5, ptr),
+    ptr = ifelse(atriskr == 0, 0, ptr)
     )
 
 ```
@@ -980,6 +1112,148 @@ scr_res <- bind_rows(scr_tab, scr_tab_pgp3ct694)
 write_csv(scr_res, file = here("output","ecomid_long_scr_by_community_pgp3ct694.csv"))
 ```
 
+# Estimate SRR Pgp3+Ct694 longitudinal
+
+As with the SCR sensitivity analysis above, also estimate the seroreversion rate (SRR) requiring the joint Pgp3+Ct694 definition of seropositivity (`d6`), rather than Pgp3 alone. A child is only "at risk" of reversion under this definition once they are positive to both antigens, and reverts when they are no longer positive to both.
+
+Estimate the SRR the same way as the Pgp3-only SRR above: bootstrap resample children with replacement (1,000 samples) and take the 95% percentile CI, using the `boot_srr()` helper defined above.
+
+## Overall rate, 6-24m and 12-24m
+
+```{r}
+#| label: estimate SRR pgp3+ct694 6-24m and 12-24m
+
+#-------------------------------
+# restrict to 12-24m, mirroring
+# the Pgp3-only analysis above
+#-------------------------------
+d6_12to24m <- d6 %>%
+  filter(timepoint %in% c(12, 18, 24))
+
+#-------------------------------
+# overall SRR, 6-24m and 12-24m
+# (bootstrap 95% CI, same procedure
+# as the overall Pgp3 SRR above)
+#-------------------------------
+srr_pgp3ct694_6to24  <- boot_srr(d6, "serorev", "ptr", seed = 357295) %>%
+  mutate(desc = "Pgp3+Ct694 seroreversion 6-24m", .before = 1)
+srr_pgp3ct694_12to24 <- boot_srr(d6_12to24m, "serorev", "ptr", seed = 357296) %>%
+  mutate(desc = "Pgp3+Ct694 seroreversion 12-24m", .before = 1)
+
+srr_pgp3ct694_overall <- bind_rows(srr_pgp3ct694_6to24, srr_pgp3ct694_12to24) %>%
+  mutate(srr_print = paste0(sprintf("%1.1f", srr), " (", sprintf("%1.1f", srr_min95), " to ", sprintf("%1.1f", srr_max95), ")"))
+
+kbl(srr_pgp3ct694_overall %>% select(-srr,-srr_min95,-srr_max95), caption = "Summary of incident seroreversions to Pgp3+Ct694 (bootstrap 95% CI)", col.names = c("","N children", "N seroreversions","Years at risk", "SRR (95% CI) per 100 person-years"))
+```
+
+## Stratified estimates by community type
+
+```{r}
+#| label: estimate stratified SRR pgp3+ct694 by community type
+
+#-------------------------------
+# identify community type from
+# sampleid (mirrors the SCR and
+# Pgp3-only SRR stratification
+# above)
+#-------------------------------
+d6_strat <- d6 %>%
+  mutate(community_code = substr(sampleid, 1, 1),
+         community_type = case_when(
+           community_code == "E" ~ "Esmeraldas",
+           community_code == "B" ~ "Borbon",
+           TRUE ~ "Rural villages"),
+         community_type = factor(community_type, levels = c("Esmeraldas","Borbon","Rural villages"))
+  )
+
+d6_12to24m_strat <- d6_12to24m %>%
+  mutate(community_code = substr(sampleid, 1, 1),
+         community_type = case_when(
+           community_code == "E" ~ "Esmeraldas",
+           community_code == "B" ~ "Borbon",
+           TRUE ~ "Rural villages"),
+         community_type = factor(community_type, levels = c("Esmeraldas","Borbon","Rural villages"))
+  )
+
+#-------------------------------
+# stratified estimates, 6-24m
+# (bootstrap 95% CI, same procedure
+# as the overall Pgp3 SRR above,
+# fixed per-community seeds for
+# reproducibility)
+#-------------------------------
+srr_pgp3ct694_strat_6to24 <- d6_strat %>%
+  group_by(community_type) %>%
+  # note: cur_group_id() is not available inside group_modify()'s
+  # data mask, so derive a distinct seed per group from the group
+  # key (.y) itself instead, via the community_type factor level
+  group_modify(function(.x, .y) boot_srr(.x, "serorev", "ptr", seed = 357295 + as.integer(.y$community_type))) %>%
+  ungroup() %>%
+  rename(desc = community_type) %>%
+  mutate(
+    desc = paste0(as.character(desc), " (6-24m)"),
+    srr_print = paste0(sprintf("%1.1f", srr), " (", sprintf("%1.1f", srr_min95), " to ", sprintf("%1.1f", srr_max95), ")")
+  )
+
+kbl(srr_pgp3ct694_strat_6to24 %>% select(-srr,-srr_min95,-srr_max95), caption = "Stratified incident seroreversions to Pgp3+Ct694 by community type, 6-24m (bootstrap 95% CI)", col.names = c("","N children", "N seroreversions","Years at risk", "SRR (95% CI) per 100 person-years"))
+
+#-------------------------------
+# stratified estimates, 12-24m
+#-------------------------------
+srr_pgp3ct694_strat_12to24 <- d6_12to24m_strat %>%
+  group_by(community_type) %>%
+  group_modify(function(.x, .y) boot_srr(.x, "serorev", "ptr", seed = 357350 + as.integer(.y$community_type))) %>%
+  ungroup() %>%
+  rename(desc = community_type) %>%
+  mutate(
+    desc = paste0(as.character(desc), " (12-24m)"),
+    srr_print = paste0(sprintf("%1.1f", srr), " (", sprintf("%1.1f", srr_min95), " to ", sprintf("%1.1f", srr_max95), ")")
+  )
+
+kbl(srr_pgp3ct694_strat_12to24 %>% select(-srr,-srr_min95,-srr_max95), caption = "Stratified incident seroreversions to Pgp3+Ct694 by community type, 12-24m (bootstrap 95% CI)", col.names = c("","N children", "N seroreversions","Years at risk", "SRR (95% CI) per 100 person-years"))
+
+#-------------------------------
+# save all of the results (overall
+# + stratified, both windows) to a
+# csv file for future use
+#-------------------------------
+srr_pgp3ct694_res <- bind_rows(srr_pgp3ct694_overall, srr_pgp3ct694_strat_6to24, srr_pgp3ct694_strat_12to24)
+write_csv(srr_pgp3ct694_res, file = here("output","ecomid_long_srr_pgp3ct694.csv"))
+```
+
+
+
+```{r}
+#| label: combined SRR table pgp3 and pgp3+ct694
+#-------------------------------
+# combine overall SRR estimates
+# for Pgp3 alone and Pgp3+Ct694,
+# 6-24m and 12-24m windows
+#-------------------------------
+srr_combined <- bind_rows(
+  srr_tab       %>% mutate(antigen = "Pgp3",       window = "6-24 months"),
+  srr_tab_12to24      %>% mutate(antigen = "Pgp3",       window = "12-24 months"),
+  srr_pgp3ct694_6to24  %>% mutate(antigen = "Pgp3+Ct694", window = "6-24 months"),
+  srr_pgp3ct694_12to24 %>% mutate(antigen = "Pgp3+Ct694", window = "12-24 months")
+) %>%
+  mutate(
+    antigen   = factor(antigen, levels = c("Pgp3", "Pgp3+Ct694")),
+    window    = factor(window,  levels = c("6-24 months", "12-24 months")),
+    srr_print = paste0(sprintf("%1.1f", srr), " (", sprintf("%1.1f", srr_min95), " to ", sprintf("%1.1f", srr_max95), ")")
+  ) %>%
+  arrange(antigen, window) %>%
+  select(antigen, window, everything(), -desc)
+
+kbl(srr_combined %>% select(-antigen, -srr, -srr_min95, -srr_max95),
+    caption = "Incident seroreversion rates for Pgp3 alone and Pgp3+Ct694, 6-24 and 12-24 months (bootstrap 95% CI)",
+    col.names = c("Follow-up window", "N children", "N seroreversions", "Years at risk", "SRR (95% CI) per 100 person-years")) %>%
+  kable_styling(full_width = FALSE) %>%
+  pack_rows(index = table(srr_combined$antigen))
+
+write_csv(srr_combined %>% select(-antigen, -srr, -srr_min95, -srr_max95) %>% 
+            mutate(ptarr = round(ptarr, 1)), 
+                   file = here("output", "table_s4_ecomid_long_srr_combined.csv"))
+```
 
 # Session Info
 ```{r session info}
