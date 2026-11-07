@@ -33,7 +33,7 @@ source(here("R", "0-config.R"))
 
 ```{r}
 # Dataset to pull demographic info from 
-d <- read_rds(here("../../data/serology/final/ecomid_serology_datasets","ecomid_sero_antigen_seropos_long_v02_20261007.rds"))
+d <- read_rds(here("~/Library/CloudStorage/Box-Box/EcoMID/data/serology/final/ecomid_serology_datasets","ecomid_sero_antigen_seropos_long_v02_20261007.rds"))
 d$house_ID <- str_sub(d$childid, -4)
 
 d %>% distinct(childid, community_name, community_type) %>%
@@ -41,7 +41,7 @@ d %>% distinct(childid, community_name, community_type) %>%
   arrange(community_name)
 
 # Participant information
-survey <- read.csv(here("../../Data/ecomid-field/final/surveydata_20251003.csv"))
+survey <- read.csv(here("~/Library/CloudStorage/Box-Box/EcoMID/Data/ecomid-field/final/surveydata_20251003.csv"))
 survey$house_ID <- str_pad(survey$house_ID, width = 4, pad = "0")
 
 survey_consolidated <- survey %>% filter(survey$house_ID %in% d$house_ID) %>% left_join(d %>% select(house_ID, community_type, community_name)) %>% unique()
