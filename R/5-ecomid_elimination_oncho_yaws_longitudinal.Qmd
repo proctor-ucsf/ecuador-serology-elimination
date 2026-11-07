@@ -1,0 +1,280 @@
+---
+title: "Integrated serosurveillance to assess disease elimination in coastal Ecuador"
+subtitle: "Oncho and Yaws antigen longitudinal analysis"
+author: "Niko Walas nikolina.walas@ucsf.edu"
+date: "updated: `r Sys.time()`"
+date-modified: "Nov-4-2026"
+format:
+  html:
+    
+    toc: true
+    embed-resources: true
+    code-fold: true
+    link-external-newwindow: true
+---
+
+# Summary
+
+This script summarizes IgG antibody responses to Onchocerciasis ov16 and rp17 & tmpa antigens among children in the ECoMiD birth cohort for a supplemental figure in the manuscript. 
+
+# Preamble
+
+```{r preamble}
+library(here)
+here()
+#----------------------------
+# source the config file
+#----------------------------
+source(here("R","0-config.R"))
+library(patchwork)
+
+```
+
+# Load the clean MBA data
+
+```{r load antibody data}
+#-------------------------------
+# load the formatted MBA data
+# for EcoMID, created by
+# 0-all_sero_results_dataclean.Rmd
+#
+# data are in long format
+#-------------------------------
+d <- read_rds(here("../../data/serology/final/ecomid_serology_datasets","ecomid_sero_antigen_seropos_long_v02_20261007.rds"))
+
+# drop monitoring targets
+d1 <- d %>%
+  filter( !antigen %in% c("gst","monitor","vero"))
+```
+
+```{r load child visit data}
+#-------------------------------
+# load child visit data for
+# exact dates at age of DBS collection
+#-------------------------------
+dvisit <- read_rds(file=here("../../data/ecomid-field/final","ecomid_child_visit_info_2026-06-15.rds"))
+
+#-------------------------------
+# join visit ages to serology
+# data and create a final age
+# variable
+#-------------------------------
+d2 <- d1 %>%
+  left_join(dvisit, join_by("community","community_name","childid","timepoint"), relationship = "many-to-one") %>%
+  mutate(age_days = case_when(
+    !is.na(agedays_dbs) ~ agedays_dbs,
+    is.na(agedays_dbs) & !is.na(agedays_stool) ~ agedays_stool,
+    is.na(agedays_dbs) & is.na(agedays_stool) ~ agedays_svy,
+    TRUE ~ NA
+  ),
+    # there are 2 children with visits that don't appear in the childvisit data
+    # for them, it is both at 12 months, so assume age is DOB + 365 days
+    agedays = ifelse(is.na(age_days), difftime(time1=dob, time2=dob + 365, units="days"), age_days), 
+  age_months = age_days/30.4,
+  age_years = age_days/365.25
+           
+           )
+```
+
+# MFI by age
+
+## Oncho
+
+Plot Oncho ov16 for the 4 children who were seropositive to both at some point during follow-up.
+```{r}
+#-------------------------------
+dct_ov16 <- d2 %>%
+  filter(antigen == "ov16")
+#-------------------------------
+# pivot the MFI and seropos
+# values to wide format by sample
+#-------------------------------
+dct2_ov16 <- dct_ov16 %>%
+  select(community_type,sampleid,childid,timepoint, age_months, antigen,log10mfi,seropos) %>%
+  pivot_wider(id_cols=c("community_type","sampleid","childid","timepoint","age_months"),
+              names_from = "antigen",values_from=c("log10mfi","seropos"))
+#-------------------------------
+# identify when children first became positive to ov16
+#-------------------------------
+firstpos_ov16 <- dct2_ov16 %>%
+  filter(seropos_ov16==1) %>%
+  group_by(childid) %>%
+  mutate(firstpos = min(timepoint),
+         firstpos = paste0("Age ",firstpos," months"),
+         firstpos = factor(firstpos, levels=paste0("Age ",c(6,9,12,18,24)," months"))
+  ) %>%
+  select(childid,firstpos) %>%
+  distinct()
+nrow(firstpos_ov16) # n children ever positive to ov16
+```
+
+## Yaws 
+```{r}
+#-------------------------------
+# filter to the two Yaws antigens
+#-------------------------------
+dct_yaws <- d2 %>%
+  filter(antigen %in% c("rp17","tmpa"))
+#-------------------------------
+# pivot the MFI and seropos
+# values to wide format by sample
+#-------------------------------
+dct2_yaws <- dct_yaws %>%
+  select(community_type,sampleid,childid,timepoint, age_months, antigen,log10mfi,seropos) %>%
+  pivot_wider(id_cols=c("community_type","sampleid","childid","timepoint","age_months"),
+              names_from = "antigen",values_from=c("log10mfi","seropos")) %>%
+  # create a joint seropositivity indicator - positive to BOTH at the SAME timepoint
+  mutate(seropos_rp17tmpa = ifelse(seropos_rp17==1 & seropos_tmpa==1,1,0)) %>%
+  # everpos = 1 if the child was ever positive to both simultaneously, at any visit
+  group_by(childid) %>%
+  mutate(everpos = max(seropos_rp17tmpa, na.rm=TRUE)) %>%
+  ungroup()
+#-------------------------------
+# identify children ever positive to both, and
+# when they first became jointly positive
+#-------------------------------
+firstpos_yaws <- dct2_yaws %>%
+  filter(seropos_rp17tmpa==1) %>%
+  group_by(childid) %>%
+  mutate(firstpos = min(timepoint),
+         firstpos = paste0("Age ",firstpos," months"),
+         firstpos = factor(firstpos, levels=paste0("Age ",c(6,9,12,18,24)," months"))
+  ) %>%
+  select(childid,firstpos) %>%
+  distinct()
+nrow(firstpos_yaws) # n children ever jointly positive to rp17 and tmpa
+```
+
+## Shared labels
+```{r}
+ #-------------------------------
+# force the overlapping children (AB8013, AB8014) to be
+# labeled first, so they line up on the left in both panels;
+# remaining children get the next codes.
+# the label prefix is mapped from the child's 2-letter ID
+# prefix (e.g., "AB" -> "R", "BB" -> "B") - add more entries
+# to id_prefix_map below if other prefixes show up in your data
+#-------------------------------
+id_prefix_map <- c("AB" = "R", "BB" = "B")
+
+overlap_ids     <- c("AB8013")
+other_ov16_ids  <- sort(setdiff(firstpos_ov16$childid, overlap_ids))
+other_yaws_ids  <- sort(setdiff(firstpos_yaws$childid, overlap_ids))
+ordered_ids <- c(overlap_ids, other_ov16_ids, other_yaws_ids)
+
+child_label_lookup <- tibble(childid = ordered_ids) %>%
+  mutate(id_prefix    = substr(childid, 1, 2),
+         label_prefix = id_prefix_map[id_prefix],
+         childid_plot = paste0(label_prefix, "-", sprintf("%03d", row_number()))) %>%
+  select(childid, childid_plot)
+child_label_lookup
+# sanity check: flag any child whose 2-letter ID prefix isn't yet in id_prefix_map
+child_label_lookup %>% filter(is.na(childid_plot))
+```
+## Final plotting dataframes
+
+```{r}
+dct3_ov16 <- dct2_ov16 %>%
+  filter(childid %in% firstpos_ov16$childid) %>%
+  left_join(firstpos_ov16, join_by(childid)) %>%
+  left_join(child_label_lookup, join_by(childid)) %>%
+  filter(!is.na(log10mfi_ov16))
+
+dct3_yaws <- dct2_yaws %>%
+  filter(everpos==1) %>%
+  left_join(firstpos_yaws, join_by(childid)) %>%
+  left_join(child_label_lookup, join_by(childid)) %>%
+  filter(!is.na(log10mfi_rp17) | !is.na(log10mfi_tmpa))
+
+ov16_levels <- child_label_lookup %>% filter(childid %in% firstpos_ov16$childid) %>% pull(childid_plot)
+yaws_levels <- child_label_lookup %>% filter(childid %in% firstpos_yaws$childid) %>% pull(childid_plot)
+
+plot_data_ov16 <- dct3_ov16 %>%
+  select(childid_plot, age_months, log10mfi_ov16) %>%
+  mutate(childid_plot = factor(childid_plot, levels = ov16_levels))
+
+plot_data_yaws <- dct3_yaws %>%
+  select(childid_plot, age_months, log10mfi_rp17, log10mfi_tmpa) %>%
+  mutate(childid_plot = factor(childid_plot, levels = yaws_levels))
+```
+
+## Composite Plot
+
+```{r}
+ov16cut  <- log10(d2$mficut[d2$antigen=="ov16"][1])
+rp17cut  <- log10(d2$mficut[d2$antigen=="rp17"][1])
+tmpacut  <- log10(d2$mficut[d2$antigen=="tmpa"][1])
+
+# Panel A: Oncho (ov16), 4 children, one row
+plot_ov16_mfi <- ggplot(plot_data_ov16, aes(x=age_months)) +
+  facet_wrap(~childid_plot, nrow = 1) +
+  geom_hline(yintercept = ov16cut, lty="dashed", lwd=0.2, color=cbpal[8]) +
+  geom_line(aes(y=log10mfi_ov16), alpha = 0.9, color=cbpal[8]) +
+  scale_x_continuous(breaks = c(6,9,12,18,24)) +
+  coord_cartesian(xlim=c(6,24),ylim=c(0,4.5)) +
+  labs(x = "Age in months", y="log10 IgG Luminex response (MFI-bg)",
+       subtitle="Oncho (Ov16)") +
+  theme_minimal()
+
+# Panel B: Yaws (rp17 and tmpa), 3 real children, one row
+plot_yaws_mfi <- ggplot(plot_data_yaws, aes(x=age_months)) +
+  facet_wrap(~childid_plot, nrow = 1) +
+  geom_hline(yintercept = rp17cut, lty="dashed", lwd=0.2, color=cbpal[4]) +
+  geom_hline(yintercept = tmpacut, lty="dashed", lwd=0.2, color=cbpal[1]) +
+  geom_line(aes(y=log10mfi_rp17, color="Rp17"), alpha = 0.9) +
+  geom_line(aes(y=log10mfi_tmpa, color="TmpA"), alpha = 0.9) +
+  scale_x_continuous(breaks = c(6,9,12,18,24)) +
+  coord_cartesian(xlim=c(6,24),ylim=c(0,4.5)) +
+  scale_color_manual(name=NULL, values=c(Rp17=cbpal[4], TmpA=cbpal[1])) +
+  labs(x = "Age in months", y="log10 IgG Luminex response (MFI-bg)",
+       subtitle="Yaws (Rp17 and TmpA)") +
+  theme_minimal()
+
+# pad the Yaws row with a true blank spacer (1 panel's worth of width)
+# so it visually aligns with Oncho's row of 4
+plot_yaws_row <- plot_yaws_mfi + guide_area() +
+  plot_layout(widths = c(3, 1), guides = "collect")
+
+plot_composite <- (plot_ov16_mfi / plot_yaws_row) +
+  plot_annotation(tag_levels = "A")
+plot_composite
+
+ggsave(filename = here("output","ecomid-longtrajectories-oncho-yaws-composite.png"),
+       plot = plot_composite, device = "png", width = 220, height = 160, units = "mm")
+
+# ggsave(filename = here("output","figureS1-ecomid-longtrajectories-oncho-yaws-composite.tiff"), plot_composite, device = "tiff", width = 220, height = 160, units = "mm")
+```
+
+# Investigate AB8014
+Sample had a spike in MFI at 9 months for all three antigens (Oncho, Yaws). Investigate if this trend was for other antigens on the panel. 
+```{r}
+# Pull sample
+d_ab8014 <- d2 %>% filter(childid == "AB8014")
+
+# plot
+plot_ab8014 <- ggplot(d_ab8014, aes(x = age_months, y = log10mfi)) +
+  facet_wrap(~antigen_lab, scales = "free_y") +
+  geom_hline(aes(yintercept = log10(mficut)), lty = "dashed", color = "grey40") +
+  geom_line(color = cbpal[7], alpha = 0.7) +
+  geom_point(color = cbpal[7], alpha = 0.7, size = 1.5) +
+  scale_x_continuous(breaks = c(6,9,12,18,24)) +
+  labs(x = "Age in months", y = "log10 IgG Luminex response (MFI-bg)",
+       title = "Child AB8014: IgG trajectories across all antigens") +
+  theme_minimal(base_size = 12) +
+  theme(strip.text = element_text(size = 9),
+        axis.text.x = element_text(size = 8, angle = 45, hjust = 1))
+plot_ab8014
+
+# export
+ggsave(filename = here("output","ecomid-child-AB8014.png"),
+       plot = plot_ab8014, device = "png", width = 250, height = 200, units = "mm")
+
+
+```
+
+# Session Info
+```{r session info}
+sessionInfo()
+```
+
+
